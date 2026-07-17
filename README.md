@@ -2,9 +2,7 @@
 
 Typed [Effect-TS](https://effect.website) SDK for [herdr](https://herdr.dev), the terminal-native agent multiplexer.
 
-**Status:** scaffold only. The design is being grilled in a separate session before implementation lands. See the vault note `3100-Permanent (AI)/Effect-Herdr Plugin SDK - Typed Full-Duplex Proposal.md` for the current proposal.
-
-## Layout
+**Status:** scaffold only. Design decisions accumulate in [`docs/design.md`](./docs/design.md); the full proposal lives in the vault note `3100-Permanent (AI)/Effect-Herdr Plugin SDK - Typed Full-Duplex Proposal.md`.
 
 ```
 packages/
