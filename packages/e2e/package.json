@@ -1,0 +1,16 @@
+{
+  "name": "effect-herdr-e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "effect-herdr": "workspace:*"
+  },
+  "peerDependencies": {
+    "effect": "4.0.0-beta.74"
+  }
+}
