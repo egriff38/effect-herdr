@@ -26,6 +26,9 @@ const dyingHandlers = {
   "tab.get": () => Effect.die("tab.get not stubbed for this test"),
   "pane.list": () => Effect.die("pane.list not stubbed for this test"),
   "pane.get": () => Effect.die("pane.get not stubbed for this test"),
+  "pane.split": () => Effect.die("pane.split not stubbed for this test"),
+  "pane.focus": () => Effect.die("pane.focus not stubbed for this test"),
+  "session.snapshot": () => Effect.die("session.snapshot not stubbed for this test"),
 } as const
 
 describe("HerdrRpcs", () => {

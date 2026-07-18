@@ -7,13 +7,15 @@ import {
   PaneInfoResult,
   PaneListResult,
   PongResult,
+  SessionSnapshotResult,
   TabInfoResult,
   WorkspaceInfoResult,
   WorkspaceListResult,
 } from "../src/protocol/HerdrRpcs.js"
 import * as HerdrSession from "../src/HerdrSession.js"
 import { currentPane, currentTab, currentWorkspace } from "../src/operations/current.js"
-import { listPanes, snapshotPane } from "../src/operations/pane.js"
+import { activePane, activeTab, focusedPane, focusedTab, focusedWorkspace } from "../src/operations/focus.js"
+import { focusPane, listPanes, snapshotPane, splitPane } from "../src/operations/pane.js"
 import type { PaneId, TabId, WorkspaceId } from "../src/protocol/schemas.js"
 
 /**
@@ -29,6 +31,13 @@ type Handlers = {
   readonly "tab.get"?: (p: { readonly tab_id: string }) => Effect.Effect<TabInfoResult>
   readonly "pane.list"?: (p: { readonly workspace_id: string | null }) => Effect.Effect<PaneListResult>
   readonly "pane.get"?: (p: { readonly pane_id: string }) => Effect.Effect<PaneInfoResult>
+  readonly "pane.split"?: (p: {
+    readonly target_pane_id: string | null
+    readonly direction: "right" | "down"
+    readonly focus?: boolean | undefined
+  }) => Effect.Effect<PaneInfoResult>
+  readonly "pane.focus"?: (p: { readonly pane_id: string }) => Effect.Effect<PaneInfoResult>
+  readonly "session.snapshot"?: () => Effect.Effect<SessionSnapshotResult>
 }
 
 const fakeConnectionLayer = (handlers: Handlers) =>
@@ -43,6 +52,9 @@ const fakeConnectionLayer = (handlers: Handlers) =>
             "tab.get": handlers["tab.get"] ?? (() => Effect.die("tab.get not stubbed")),
             "pane.list": handlers["pane.list"] ?? (() => Effect.die("pane.list not stubbed")),
             "pane.get": handlers["pane.get"] ?? (() => Effect.die("pane.get not stubbed")),
+            "pane.split": handlers["pane.split"] ?? (() => Effect.die("pane.split not stubbed")),
+            "pane.focus": handlers["pane.focus"] ?? (() => Effect.die("pane.focus not stubbed")),
+            "session.snapshot": handlers["session.snapshot"] ?? (() => Effect.die("session.snapshot not stubbed")),
           }),
         ),
       )
@@ -194,6 +206,520 @@ describe("operations/pane", () => {
     expect(result[0]?.id).toBe("w1:p1" as PaneId)
     expect(result[1]?.id).toBe("w1:p2" as PaneId)
     expect(result[1]?.agent).toBe("codex")
+  })
+
+  test("splitPane dual-shape: data-first and data-last dispatch identical pane.split calls", async () => {
+    const original = { id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }
+    const wireNewPane = {
+      pane_id: "w1:p2",
+      tab_id: "w1:t1",
+      workspace_id: "w1",
+      terminal_id: "term-2",
+      focused: false,
+      agent_status: "idle" as const,
+      revision: 0,
+    }
+    const splitHandler = (p: { readonly target_pane_id: string | null; readonly direction: "right" | "down" }) => {
+      expect(p.target_pane_id).toBe("w1:p1")
+      expect(p.direction).toBe("right")
+      return Effect.succeed(new PaneInfoResult({ type: "pane_info", pane: wireNewPane }))
+    }
+    const expected = { id: "w1:p2" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }
+
+    const dataFirst = await Effect.runPromise(
+      Effect.scoped(
+        splitPane(original, { direction: "right" }).pipe(
+          Effect.provide(HerdrSession.layer),
+          Effect.provide(fakeConnectionLayer({ "pane.split": splitHandler })),
+        ),
+      ),
+    )
+    const dataLast = await Effect.runPromise(
+      Effect.scoped(
+        splitPane({ direction: "right" })(original).pipe(
+          Effect.provide(HerdrSession.layer),
+          Effect.provide(fakeConnectionLayer({ "pane.split": splitHandler })),
+        ),
+      ),
+    )
+
+    expect(dataFirst).toEqual(expected)
+    expect(dataLast).toEqual(expected)
+  })
+
+  test("splitPane defaults direction to right and omits focus when not provided", async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        splitPane({ id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }).pipe(
+          Effect.provide(HerdrSession.layer),
+          Effect.provide(
+            fakeConnectionLayer({
+              "pane.split": (p) => {
+                expect(p.direction).toBe("right")
+                expect(p.focus).toBeUndefined()
+                return Effect.succeed(
+                  new PaneInfoResult({
+                    type: "pane_info",
+                    pane: {
+                      pane_id: "w1:p2",
+                      tab_id: "w1:t1",
+                      workspace_id: "w1",
+                      terminal_id: "term-2",
+                      focused: false,
+                      agent_status: "idle",
+                      revision: 0,
+                    },
+                  }),
+                )
+              },
+            }),
+          ),
+        ),
+      ),
+    )
+  })
+
+  test("focusPane dispatches pane.focus with the pane's id", async () => {
+    let dispatchedId: string | undefined
+    await Effect.runPromise(
+      Effect.scoped(
+        focusPane({ id: "w1:p2" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }).pipe(
+          Effect.provide(HerdrSession.layer),
+          Effect.provide(
+            fakeConnectionLayer({
+              "pane.focus": (p) => {
+                dispatchedId = p.pane_id
+                return Effect.succeed(
+                  new PaneInfoResult({
+                    type: "pane_info",
+                    pane: {
+                      pane_id: "w1:p2",
+                      tab_id: "w1:t1",
+                      workspace_id: "w1",
+                      terminal_id: "term-2",
+                      focused: true,
+                      agent_status: "idle",
+                      revision: 1,
+                    },
+                  }),
+                )
+              },
+            }),
+          ),
+        ),
+      ),
+    )
+
+    expect(dispatchedId).toBe("w1:p2")
+  })
+})
+
+describe("operations/focus", () => {
+  test("activePane(tab) dispatches session.snapshot + pane.get, not workspace.get", async () => {
+    let snapshotCalled = false
+    let paneGetCalled = false
+
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        activePane({ id: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }).pipe(
+          Effect.provide(HerdrSession.layer),
+          Effect.provide(
+            fakeConnectionLayer({
+              "workspace.get": () => Effect.die("activePane(tab) must not call workspace.get"),
+              "session.snapshot": () => {
+                snapshotCalled = true
+                return Effect.succeed(
+                  new SessionSnapshotResult({
+                    type: "session_snapshot",
+                    snapshot: {
+                      focused_workspace_id: "w1",
+                      focused_tab_id: "w1:t1",
+                      focused_pane_id: "w1:p2",
+                      workspaces: [],
+                      tabs: [],
+                      panes: [],
+                      layouts: [
+                        { workspace_id: "w1", tab_id: "w1:t1", focused_pane_id: "w1:p2" },
+                      ],
+                    },
+                  }),
+                )
+              },
+              "pane.get": (p) => {
+                paneGetCalled = true
+                expect(p.pane_id).toBe("w1:p2")
+                return Effect.succeed(
+                  new PaneInfoResult({
+                    type: "pane_info",
+                    pane: {
+                      pane_id: "w1:p2",
+                      tab_id: "w1:t1",
+                      workspace_id: "w1",
+                      terminal_id: "term-2",
+                      focused: true,
+                      agent_status: "idle",
+                      revision: 2,
+                    },
+                  }),
+                )
+              },
+            }),
+          ),
+        ),
+      ),
+    )
+
+    expect(snapshotCalled).toBe(true)
+    expect(paneGetCalled).toBe(true)
+    expect(result.id).toBe("w1:p2" as PaneId)
+  })
+
+  test("activePane(workspace) dispatches workspace.get -> session.snapshot -> pane.get", async () => {
+    const calls: Array<string> = []
+
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        activePane({ id: "w1" as WorkspaceId }).pipe(
+          Effect.provide(HerdrSession.layer),
+          Effect.provide(
+            fakeConnectionLayer({
+              "workspace.get": (p) => {
+                calls.push("workspace.get")
+                return Effect.succeed(
+                  new WorkspaceInfoResult({
+                    type: "workspace_info",
+                    workspace: {
+                      workspace_id: p.workspace_id,
+                      number: 1,
+                      label: "default",
+                      focused: true,
+                      active_tab_id: "w1:t1",
+                      tab_count: 1,
+                      pane_count: 2,
+                      agent_status: "idle",
+                    },
+                  }),
+                )
+              },
+              "session.snapshot": () => {
+                calls.push("session.snapshot")
+                return Effect.succeed(
+                  new SessionSnapshotResult({
+                    type: "session_snapshot",
+                    snapshot: {
+                      focused_workspace_id: "w1",
+                      focused_tab_id: "w1:t1",
+                      focused_pane_id: "w1:p1",
+                      workspaces: [],
+                      tabs: [],
+                      panes: [],
+                      layouts: [
+                        { workspace_id: "w1", tab_id: "w1:t1", focused_pane_id: "w1:p1" },
+                      ],
+                    },
+                  }),
+                )
+              },
+              "pane.get": (p) => {
+                calls.push("pane.get")
+                return Effect.succeed(
+                  new PaneInfoResult({
+                    type: "pane_info",
+                    pane: {
+                      pane_id: p.pane_id,
+                      tab_id: "w1:t1",
+                      workspace_id: "w1",
+                      terminal_id: "term-1",
+                      focused: true,
+                      agent_status: "idle",
+                      revision: 1,
+                    },
+                  }),
+                )
+              },
+            }),
+          ),
+        ),
+      ),
+    )
+
+    expect(calls).toEqual(["workspace.get", "session.snapshot", "pane.get"])
+    expect(result.id).toBe("w1:p1" as PaneId)
+  })
+
+  test("activeTab dispatches workspace.get -> tab.get and decodes a TabSnapshot", async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        activeTab({ id: "w1" as WorkspaceId }).pipe(
+          Effect.provide(HerdrSession.layer),
+          Effect.provide(
+            fakeConnectionLayer({
+              "workspace.get": (p) =>
+                Effect.succeed(
+                  new WorkspaceInfoResult({
+                    type: "workspace_info",
+                    workspace: {
+                      workspace_id: p.workspace_id,
+                      number: 1,
+                      label: "default",
+                      focused: true,
+                      active_tab_id: "w1:t1",
+                      tab_count: 1,
+                      pane_count: 1,
+                      agent_status: "idle",
+                    },
+                  }),
+                ),
+              "tab.get": (p) =>
+                Effect.succeed(
+                  new TabInfoResult({
+                    type: "tab_info",
+                    tab: {
+                      tab_id: p.tab_id,
+                      workspace_id: "w1",
+                      number: 1,
+                      label: "main",
+                      focused: true,
+                      pane_count: 1,
+                      agent_status: "idle",
+                    },
+                  }),
+                ),
+            }),
+          ),
+        ),
+      ),
+    )
+
+    expect(result.id).toBe("w1:t1" as TabId)
+    expect(result.label).toBe("main")
+  })
+
+  test("focusedPane is Option.none when session.snapshot's focused_pane_id is null", async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        focusedPane.pipe(
+          Effect.provide(HerdrSession.layer),
+          Effect.provide(
+            fakeConnectionLayer({
+              "session.snapshot": () =>
+                Effect.succeed(
+                  new SessionSnapshotResult({
+                    type: "session_snapshot",
+                    snapshot: {
+                      focused_workspace_id: null,
+                      focused_tab_id: null,
+                      focused_pane_id: null,
+                      workspaces: [],
+                      tabs: [],
+                      panes: [],
+                      layouts: [],
+                    },
+                  }),
+                ),
+            }),
+          ),
+        ),
+      ),
+    )
+
+    expect(Option.isNone(result)).toBe(true)
+  })
+
+  test("focusedPane is Option.some(pane) when session.snapshot's focused_pane_id is non-null", async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        focusedPane.pipe(
+          Effect.provide(HerdrSession.layer),
+          Effect.provide(
+            fakeConnectionLayer({
+              "session.snapshot": () =>
+                Effect.succeed(
+                  new SessionSnapshotResult({
+                    type: "session_snapshot",
+                    snapshot: {
+                      focused_workspace_id: "w1",
+                      focused_tab_id: "w1:t1",
+                      focused_pane_id: "w1:p1",
+                      workspaces: [],
+                      tabs: [],
+                      panes: [],
+                      layouts: [],
+                    },
+                  }),
+                ),
+              "pane.get": (p) =>
+                Effect.succeed(
+                  new PaneInfoResult({
+                    type: "pane_info",
+                    pane: {
+                      pane_id: p.pane_id,
+                      tab_id: "w1:t1",
+                      workspace_id: "w1",
+                      terminal_id: "term-1",
+                      focused: true,
+                      agent_status: "idle",
+                      revision: 1,
+                    },
+                  }),
+                ),
+            }),
+          ),
+        ),
+      ),
+    )
+
+    expect(Option.isSome(result)).toBe(true)
+    if (Option.isSome(result)) expect(result.value.id).toBe("w1:p1" as PaneId)
+  })
+
+  test("focusedTab is Option.none/Option.some following session.snapshot's focused_tab_id", async () => {
+    const noneResult = await Effect.runPromise(
+      Effect.scoped(
+        focusedTab.pipe(
+          Effect.provide(HerdrSession.layer),
+          Effect.provide(
+            fakeConnectionLayer({
+              "session.snapshot": () =>
+                Effect.succeed(
+                  new SessionSnapshotResult({
+                    type: "session_snapshot",
+                    snapshot: {
+                      focused_workspace_id: null,
+                      focused_tab_id: null,
+                      focused_pane_id: null,
+                      workspaces: [],
+                      tabs: [],
+                      panes: [],
+                      layouts: [],
+                    },
+                  }),
+                ),
+            }),
+          ),
+        ),
+      ),
+    )
+    expect(Option.isNone(noneResult)).toBe(true)
+
+    const someResult = await Effect.runPromise(
+      Effect.scoped(
+        focusedTab.pipe(
+          Effect.provide(HerdrSession.layer),
+          Effect.provide(
+            fakeConnectionLayer({
+              "session.snapshot": () =>
+                Effect.succeed(
+                  new SessionSnapshotResult({
+                    type: "session_snapshot",
+                    snapshot: {
+                      focused_workspace_id: "w1",
+                      focused_tab_id: "w1:t1",
+                      focused_pane_id: "w1:p1",
+                      workspaces: [],
+                      tabs: [],
+                      panes: [],
+                      layouts: [],
+                    },
+                  }),
+                ),
+              "tab.get": (p) =>
+                Effect.succeed(
+                  new TabInfoResult({
+                    type: "tab_info",
+                    tab: {
+                      tab_id: p.tab_id,
+                      workspace_id: "w1",
+                      number: 1,
+                      label: "main",
+                      focused: true,
+                      pane_count: 1,
+                      agent_status: "idle",
+                    },
+                  }),
+                ),
+            }),
+          ),
+        ),
+      ),
+    )
+    expect(Option.isSome(someResult)).toBe(true)
+    if (Option.isSome(someResult)) expect(someResult.value.id).toBe("w1:t1" as TabId)
+  })
+
+  test("focusedWorkspace is Option.none/Option.some following session.snapshot's focused_workspace_id", async () => {
+    const noneResult = await Effect.runPromise(
+      Effect.scoped(
+        focusedWorkspace.pipe(
+          Effect.provide(HerdrSession.layer),
+          Effect.provide(
+            fakeConnectionLayer({
+              "session.snapshot": () =>
+                Effect.succeed(
+                  new SessionSnapshotResult({
+                    type: "session_snapshot",
+                    snapshot: {
+                      focused_workspace_id: null,
+                      focused_tab_id: null,
+                      focused_pane_id: null,
+                      workspaces: [],
+                      tabs: [],
+                      panes: [],
+                      layouts: [],
+                    },
+                  }),
+                ),
+            }),
+          ),
+        ),
+      ),
+    )
+    expect(Option.isNone(noneResult)).toBe(true)
+
+    const someResult = await Effect.runPromise(
+      Effect.scoped(
+        focusedWorkspace.pipe(
+          Effect.provide(HerdrSession.layer),
+          Effect.provide(
+            fakeConnectionLayer({
+              "session.snapshot": () =>
+                Effect.succeed(
+                  new SessionSnapshotResult({
+                    type: "session_snapshot",
+                    snapshot: {
+                      focused_workspace_id: "w1",
+                      focused_tab_id: "w1:t1",
+                      focused_pane_id: "w1:p1",
+                      workspaces: [],
+                      tabs: [],
+                      panes: [],
+                      layouts: [],
+                    },
+                  }),
+                ),
+              "workspace.get": (p) =>
+                Effect.succeed(
+                  new WorkspaceInfoResult({
+                    type: "workspace_info",
+                    workspace: {
+                      workspace_id: p.workspace_id,
+                      number: 1,
+                      label: "default",
+                      focused: true,
+                      active_tab_id: "w1:t1",
+                      tab_count: 1,
+                      pane_count: 1,
+                      agent_status: "idle",
+                    },
+                  }),
+                ),
+            }),
+          ),
+        ),
+      ),
+    )
+    expect(Option.isSome(someResult)).toBe(true)
+    if (Option.isSome(someResult)) expect(someResult.value.id).toBe("w1" as WorkspaceId)
   })
 })
 

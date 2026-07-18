@@ -64,6 +64,32 @@ interface HerdrWireLine {
 const isHerdrWireLine = (u: unknown): u is HerdrWireLine =>
   typeof u === "object" && u !== null && "id" in u && typeof (u as { id: unknown }).id === "string"
 
+/**
+ * THIRD CORRECTION, empirically verified during implementation of issue #9:
+ * Effect's Schema JSON codec encodes an omitted `Schema.optional(...)` field
+ * as an EXPLICIT `null` in the JSON payload, not as a missing key. herdr's
+ * Rust-side deserializer rejects `null` for a `bool`/`string` optional field
+ * outright (`{"error":{"code":"invalid_request","message":"invalid type:
+ * null, expected a boolean..."}}`) — verified live via raw socket against
+ * `pane.split`'s optional `focus` field. Worse: herdr's error reply in this
+ * case carries `"id":""` (empty string, not the real request id) because
+ * the deserialization failure happens before herdr can even extract the
+ * id — so the reply can never be matched back to the pending request by
+ * `RpcClient`'s response-collector, and the call hangs forever (observed:
+ * 20s+ test timeout, not a herdr-side delay). Fix: strip any top-level
+ * `null`-valued key from the encoded payload before sending — herdr wants
+ * a MISSING optional key, never an explicit `null`.
+ */
+const stripNullValues = (payload: unknown): unknown => {
+  if (payload === null || payload === undefined) return {}
+  if (typeof payload !== "object" || Array.isArray(payload)) return payload
+  const stripped: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(payload as Record<string, unknown>)) {
+    if (value !== null) stripped[key] = value
+  }
+  return stripped
+}
+
 const encodeRequestLine = (message: FromClientEncoded): string | undefined => {
   if (message._tag !== "Request") {
     // herdr has no Ack/Interrupt/Eof/Ping wire concept for request/reply
@@ -73,7 +99,7 @@ const encodeRequestLine = (message: FromClientEncoded): string | undefined => {
   return JSON.stringify({
     id: String(message.id),
     method: message.tag,
-    params: message.payload ?? {},
+    params: stripNullValues(message.payload),
   }) + "\n"
 }
 

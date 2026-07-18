@@ -29,6 +29,9 @@ const fakeConnectionLayer = (handlers: {
             "tab.get": () => Effect.die("tab.get not stubbed"),
             "pane.list": () => Effect.die("pane.list not stubbed"),
             "pane.get": () => Effect.die("pane.get not stubbed"),
+            "pane.split": () => Effect.die("pane.split not stubbed"),
+            "pane.focus": () => Effect.die("pane.focus not stubbed"),
+            "session.snapshot": () => Effect.die("session.snapshot not stubbed"),
           }),
         ),
       )

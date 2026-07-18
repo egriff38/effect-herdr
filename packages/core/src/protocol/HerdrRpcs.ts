@@ -104,6 +104,47 @@ export class PaneInfoResult extends Schema.Class<PaneInfoResult>("PaneInfoResult
   pane: PaneInfoWire,
 }) {}
 
+/**
+ * One entry of herdr's `session.snapshot` `layouts` array — the per-tab
+ * pane layout, keyed by `tab_id`. Only `workspace_id`/`tab_id`/
+ * `focused_pane_id` are modeled — the SDK only needs "which pane is active
+ * within this tab" (`activePane(tab)`, issue #9). herdr also sends `zoomed`,
+ * `area`, `panes`, `splits` (full layout geometry); unmodeled, ignored by
+ * the schema decoder, not an error.
+ */
+export class PaneLayoutSnapshotWire extends Schema.Class<PaneLayoutSnapshotWire>("PaneLayoutSnapshotWire")({
+  workspace_id: Schema.String,
+  tab_id: Schema.String,
+  focused_pane_id: Schema.String,
+}) {}
+
+/**
+ * `session.snapshot`'s result. CORRECTION vs. issue #9's own spec text: the
+ * issue claimed `tab.get`'s `TabInfo` exposes a `focused_pane_id` field to
+ * drill `activePane(tab)` from — confirmed ABSENT from the real wire (see
+ * `TabInfoWire` above / `schemas.ts`'s `TabSnapshot` comment). The real
+ * per-tab active-pane source is `SessionSnapshotResult.snapshot.layouts[]`
+ * (a `PaneLayoutSnapshotWire`, keyed by `tab_id`), verified live against a
+ * real herdr server (2-pane split + focus) during implementation of issue
+ * #9. The three top-level `focused_*_id` fields are nullable (verified via
+ * `scripts/herdr-schema.json`'s `SessionSnapshot` def) — that's the source
+ * for `focusedPane`/`focusedTab`/`focusedWorkspace`'s `Option` wrapping.
+ * Only the fields this SDK's `focus.ts` combinators need are modeled;
+ * herdr's real `SessionSnapshot` also sends `agents` (unmodeled).
+ */
+export class SessionSnapshotResult extends Schema.Class<SessionSnapshotResult>("SessionSnapshotResult")({
+  type: Schema.Literal("session_snapshot"),
+  snapshot: Schema.Struct({
+    focused_workspace_id: Schema.NullOr(Schema.String),
+    focused_tab_id: Schema.NullOr(Schema.String),
+    focused_pane_id: Schema.NullOr(Schema.String),
+    workspaces: Schema.Array(WorkspaceInfoWire),
+    tabs: Schema.Array(TabInfoWire),
+    panes: Schema.Array(PaneInfoWire),
+    layouts: Schema.Array(PaneLayoutSnapshotWire),
+  }),
+}) {}
+
 // =============================================================================
 // The RpcGroup
 // =============================================================================
@@ -135,6 +176,35 @@ export const HerdrRpcs = RpcGroup.make(
   Rpc.make("pane.get", {
     payload: { pane_id: Schema.String },
     success: PaneInfoResult,
+    error: HerdrProtocolError,
+  }),
+  /**
+   * `pane.split` payload — wire also accepts `workspace_id`, `cwd`, `env`,
+   * `ratio` (all optional, confirmed via `scripts/herdr-schema.json`'s
+   * `PaneSplitParams`) but the SDK's `SplitOptions` (operations/pane.ts,
+   * issue #5) only exposes `direction`/`focus`, so only the fields the SDK
+   * actually sends are modeled here. Result reuses `PaneInfoResult` — herdr
+   * replies with the SAME `{"type":"pane_info","pane":<PaneInfo>}` shape
+   * `pane.get` returns (verified live), not a distinct wire class.
+   */
+  Rpc.make("pane.split", {
+    payload: {
+      target_pane_id: Schema.NullOr(Schema.String),
+      direction: Schema.Literals(["right", "down"]),
+      focus: Schema.optional(Schema.Boolean),
+    },
+    success: PaneInfoResult,
+    error: HerdrProtocolError,
+  }),
+  /** `pane.focus` also replies with `PaneInfoResult` (verified live) — the newly-focused pane's echoed state. */
+  Rpc.make("pane.focus", {
+    payload: { pane_id: Schema.String },
+    success: PaneInfoResult,
+    error: HerdrProtocolError,
+  }),
+  /** `session.snapshot` params are empty (`{}`, confirmed via `scripts/herdr-schema.json`'s `EmptyParams`). */
+  Rpc.make("session.snapshot", {
+    success: SessionSnapshotResult,
     error: HerdrProtocolError,
   }),
 )
