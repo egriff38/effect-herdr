@@ -44,33 +44,29 @@ export declare const splitPane: {
 // =============================================================================
 
 /**
- * Sum type: either send a single string (batch, includes Enter) or a
- * Stream<string> of chunks (streaming, no implicit Enter per @237). The
- * implementation branches on `Stream.isStream` internally.
- */
-export type PaneInput = string | Stream.Stream<string, unknown, unknown>
-
-/**
- * Type input into a pane's live shell.
+ * Type input into a pane's live shell. Two overload groups per input kind
+ * (rather than a sum-typed argument) so TypeScript can infer the return's
+ * error and requirement channels cleanly without a conditional-type detour.
  *
  * - `string`: single-shot, sends text + Enter (matches `herdr pane run` semantics)
- * - `Stream<string, E, R>`: real-time chunk pipe, no Enter, backpressure via
- *                           Ack. The stream's E and R propagate into the
- *                           return type conservatively.
+ * - `Stream<string, E, R>`: real-time chunk pipe, no implicit Enter (@237).
+ *                           Backpressure via the connection's Ack semantics.
+ *                           The stream's E and R propagate into the return.
  */
 export declare const runInPane: {
-  (pane: Pane, input: PaneInput): Effect.Effect<
+  // batch
+  (pane: Pane, text: string): Effect.Effect<void, HerdrProtocolError, HerdrSession>
+  (text: string): (pane: Pane) => Effect.Effect<void, HerdrProtocolError, HerdrSession>
+
+  // streaming
+  <E, R>(pane: Pane, chunks: Stream.Stream<string, E, R>): Effect.Effect<
     void,
-    HerdrProtocolError | (PaneInput extends Stream.Stream<any, infer E, any> ? E : never),
-    HerdrSession | (PaneInput extends Stream.Stream<any, any, infer R> ? R : never)
+    HerdrProtocolError | E,
+    HerdrSession | R
   >
-  (input: PaneInput): (
+  <E, R>(chunks: Stream.Stream<string, E, R>): (
     pane: Pane,
-  ) => Effect.Effect<
-    void,
-    HerdrProtocolError | (PaneInput extends Stream.Stream<any, infer E, any> ? E : never),
-    HerdrSession | (PaneInput extends Stream.Stream<any, any, infer R> ? R : never)
-  >
+  ) => Effect.Effect<void, HerdrProtocolError | E, HerdrSession | R>
 }
 
 // =============================================================================
