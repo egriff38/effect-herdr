@@ -32,6 +32,8 @@ const fakeConnectionLayer = (handlers: {
             "pane.split": () => Effect.die("pane.split not stubbed"),
             "pane.focus": () => Effect.die("pane.focus not stubbed"),
             "session.snapshot": () => Effect.die("session.snapshot not stubbed"),
+            "pane.send_text": () => Effect.die("pane.send_text not stubbed"),
+            "pane.read": () => Effect.die("pane.read not stubbed"),
           }),
         ),
       )

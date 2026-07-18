@@ -2,7 +2,9 @@
  * The typed RpcGroup for herdr's socket protocol.
  *
  * v1 currently ships: `ping`, `workspace.list`, `workspace.get`, `pane.list`,
- * `pane.get`, `tab.get`. Every subsequent slice adds methods to this group.
+ * `pane.get`, `tab.get`, `pane.split`, `pane.focus`, `session.snapshot`,
+ * `pane.send_text`, `pane.read`. Every subsequent slice adds methods to
+ * this group.
  *
  * CORRECTION vs. the original design sketch: `pane.wait_for_output` is a
  * plain request/reply on herdr's wire (confirmed against
@@ -145,6 +147,42 @@ export class SessionSnapshotResult extends Schema.Class<SessionSnapshotResult>("
   }),
 }) {}
 
+/**
+ * `pane.send_text`'s success reply — a bare `{"type":"ok"}` ack with no
+ * payload fields (confirmed live during implementation of issue #6/slice
+ * 5). herdr's socket protocol has no separate "submit" concept: the
+ * caller's `text` is typed verbatim into the pane, and if it should also
+ * run, the caller must include a trailing `\n` themselves — herdr does not
+ * append one. See `operations/pane.ts`'s `runInPane` for the SDK-level
+ * batch semantics built on top of this bare ack.
+ */
+export class OkResult extends Schema.Class<OkResult>("OkResult")({
+  type: Schema.Literal("ok"),
+}) {}
+
+/**
+ * One `pane.read` reply's `read` payload (from `scripts/herdr-schema.json`'s
+ * `PaneReadResult`, confirmed live). Added as a byproduct of issue #6's E2E
+ * test (verifying `runInPane`'s text actually reached the pane's shell);
+ * slice 6's `waitForOutput` (issue #7) also needs read-adjacent RPC access
+ * and reuses this rather than inventing a second wire class — its own
+ * `output_matched` reply nests the SAME `PaneReadResult` shape under a
+ * `read` field (see the shared-context doc's wire facts).
+ */
+export class PaneReadResult extends Schema.Class<PaneReadResult>("PaneReadResult")({
+  type: Schema.Literal("pane_read"),
+  read: Schema.Struct({
+    pane_id: Schema.String,
+    workspace_id: Schema.String,
+    tab_id: Schema.String,
+    source: Schema.Literals(["visible", "recent", "recent_unwrapped", "detection"]),
+    format: Schema.Literals(["text", "ansi"]),
+    text: Schema.String,
+    revision: Schema.Number,
+    truncated: Schema.Boolean,
+  }),
+}) {}
+
 // =============================================================================
 // The RpcGroup
 // =============================================================================
@@ -205,6 +243,37 @@ export const HerdrRpcs = RpcGroup.make(
   /** `session.snapshot` params are empty (`{}`, confirmed via `scripts/herdr-schema.json`'s `EmptyParams`). */
   Rpc.make("session.snapshot", {
     success: SessionSnapshotResult,
+    error: HerdrProtocolError,
+  }),
+  /**
+   * `pane.send_text` — herdr's ONLY text-input method (verified live during
+   * implementation of issue #6/slice 5); there is no separate `pane.run`.
+   * Params are exactly `{ pane_id, text }` — no submit/enter flag. Success
+   * replies with a bare `OkResult` (`{"type":"ok"}`), no echoed pane state.
+   * Submission is purely "does `text` end in `\n`" — herdr appends nothing.
+   * See `operations/pane.ts`'s `runInPane` for the SDK's batch semantics.
+   */
+  Rpc.make("pane.send_text", {
+    payload: { pane_id: Schema.String, text: Schema.String },
+    success: OkResult,
+    error: HerdrProtocolError,
+  }),
+  /**
+   * `pane.read` — added as a byproduct of issue #6's E2E verification (no
+   * ergonomic SDK combinator wraps this yet; slice 6's `waitForOutput`,
+   * issue #7, is the first to need read-adjacent access as a first-class
+   * combinator). Params per `scripts/herdr-schema.json`'s `PaneReadParams`:
+   * `pane_id`/`source` required, `format`/`lines`/`strip_ansi` optional —
+   * only `pane_id`/`source` are modeled since that's all any current
+   * caller sends; `format` defaults to `"text"`/`strip_ansi` to `true`
+   * server-side when omitted (confirmed via the schema).
+   */
+  Rpc.make("pane.read", {
+    payload: {
+      pane_id: Schema.String,
+      source: Schema.Literals(["visible", "recent", "recent_unwrapped", "detection"]),
+    },
+    success: PaneReadResult,
     error: HerdrProtocolError,
   }),
 )

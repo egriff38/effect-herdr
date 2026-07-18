@@ -2,10 +2,13 @@ import { describe, expect, test } from "bun:test"
 import { DateTime, Effect, Layer, Option } from "effect"
 import { RpcTest } from "effect/unstable/rpc"
 import { HerdrConnection } from "../src/HerdrConnection.js"
+import { HerdrProtocolError } from "../src/protocol/errors.js"
 import {
   HerdrRpcs,
+  OkResult,
   PaneInfoResult,
   PaneListResult,
+  PaneReadResult,
   PongResult,
   SessionSnapshotResult,
   TabInfoResult,
@@ -15,7 +18,7 @@ import {
 import * as HerdrSession from "../src/HerdrSession.js"
 import { currentPane, currentTab, currentWorkspace } from "../src/operations/current.js"
 import { activePane, activeTab, focusedPane, focusedTab, focusedWorkspace } from "../src/operations/focus.js"
-import { focusPane, listPanes, snapshotPane, splitPane } from "../src/operations/pane.js"
+import { focusPane, listPanes, runInPane, snapshotPane, splitPane } from "../src/operations/pane.js"
 import type { PaneId, TabId, WorkspaceId } from "../src/protocol/schemas.js"
 
 /**
@@ -38,6 +41,13 @@ type Handlers = {
   }) => Effect.Effect<PaneInfoResult>
   readonly "pane.focus"?: (p: { readonly pane_id: string }) => Effect.Effect<PaneInfoResult>
   readonly "session.snapshot"?: () => Effect.Effect<SessionSnapshotResult>
+  readonly "pane.send_text"?: (
+    p: { readonly pane_id: string; readonly text: string },
+  ) => Effect.Effect<OkResult, HerdrProtocolError>
+  readonly "pane.read"?: (p: {
+    readonly pane_id: string
+    readonly source: "visible" | "recent" | "recent_unwrapped" | "detection"
+  }) => Effect.Effect<PaneReadResult>
 }
 
 const fakeConnectionLayer = (handlers: Handlers) =>
@@ -55,6 +65,8 @@ const fakeConnectionLayer = (handlers: Handlers) =>
             "pane.split": handlers["pane.split"] ?? (() => Effect.die("pane.split not stubbed")),
             "pane.focus": handlers["pane.focus"] ?? (() => Effect.die("pane.focus not stubbed")),
             "session.snapshot": handlers["session.snapshot"] ?? (() => Effect.die("session.snapshot not stubbed")),
+            "pane.send_text": handlers["pane.send_text"] ?? (() => Effect.die("pane.send_text not stubbed")),
+            "pane.read": handlers["pane.read"] ?? (() => Effect.die("pane.read not stubbed")),
           }),
         ),
       )
@@ -311,6 +323,89 @@ describe("operations/pane", () => {
     )
 
     expect(dispatchedId).toBe("w1:p2")
+  })
+
+  test("runInPane appends a trailing newline to the caller's text before dispatching pane.send_text", async () => {
+    let dispatched: { readonly pane_id: string; readonly text: string } | undefined
+    await Effect.runPromise(
+      Effect.scoped(
+        runInPane(
+          { id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId },
+          "echo hello",
+        ).pipe(
+          Effect.provide(HerdrSession.layer),
+          Effect.provide(
+            fakeConnectionLayer({
+              "pane.send_text": (p) => {
+                dispatched = p
+                return Effect.succeed(new OkResult({ type: "ok" }))
+              },
+            }),
+          ),
+        ),
+      ),
+    )
+
+    expect(dispatched?.pane_id).toBe("w1:p1")
+    expect(dispatched?.text).toBe("echo hello\n")
+  })
+
+  test("runInPane dual-shape: data-first and data-last dispatch identical pane.send_text calls", async () => {
+    const pane = { id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }
+    const dispatchedDataFirst: Array<{ readonly pane_id: string; readonly text: string }> = []
+    const dispatchedDataLast: Array<{ readonly pane_id: string; readonly text: string }> = []
+
+    await Effect.runPromise(
+      Effect.scoped(
+        runInPane(pane, "echo hello").pipe(
+          Effect.provide(HerdrSession.layer),
+          Effect.provide(
+            fakeConnectionLayer({
+              "pane.send_text": (p) => {
+                dispatchedDataFirst.push(p)
+                return Effect.succeed(new OkResult({ type: "ok" }))
+              },
+            }),
+          ),
+        ),
+      ),
+    )
+    await Effect.runPromise(
+      Effect.scoped(
+        runInPane("echo hello")(pane).pipe(
+          Effect.provide(HerdrSession.layer),
+          Effect.provide(
+            fakeConnectionLayer({
+              "pane.send_text": (p) => {
+                dispatchedDataLast.push(p)
+                return Effect.succeed(new OkResult({ type: "ok" }))
+              },
+            }),
+          ),
+        ),
+      ),
+    )
+
+    expect(dispatchedDataFirst).toEqual(dispatchedDataLast)
+    expect(dispatchedDataFirst).toEqual([{ pane_id: "w1:p1", text: "echo hello\n" }])
+  })
+
+  test("runInPane propagates a HerdrProtocolError from pane.send_text (not silently discarded)", async () => {
+    const result = await Effect.runPromiseExit(
+      Effect.scoped(
+        runInPane({ id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }, "echo hi").pipe(
+          Effect.provide(HerdrSession.layer),
+          Effect.provide(
+            fakeConnectionLayer({
+              "pane.send_text": () =>
+                Effect.fail(new HerdrProtocolError({ code: "pane_not_found", rawMessage: "pane not found" })),
+            }),
+          ),
+        ),
+      ),
+    )
+
+    expect(result._tag).toBe("Failure")
   })
 })
 

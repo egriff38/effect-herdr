@@ -120,3 +120,43 @@ export const focusPane = (
     const session = yield* HerdrSession
     yield* session.rpc["pane.focus"]({ pane_id: pane.id })
   })
+
+/**
+ * Batch input: type `text` into `pane` and submit it. Dual-shaped: data-first
+ * (`runInPane(pane, text)`) and data-last (`pane.pipe(runInPane(text))`),
+ * matching `splitPane`'s pattern.
+ *
+ * Underneath: `pane.send_text`, herdr's ONLY text-input method (verified
+ * live during implementation — there is no separate `pane.run`). herdr does
+ * not append a trailing Enter itself, so this combinator appends `"\n"` to
+ * the caller's string before dispatching — that's what makes this "batch"
+ * (submit-and-move-on) rather than slice 7's streaming per-chunk sends,
+ * which must NOT add a newline.
+ *
+ * CORRECTION vs. issue #6's own spec text: the issue describes dispatching
+ * with `{ discard: true }` — Effect's `RpcClient` does support that option
+ * (fires the request, never observes the reply), but it was verified live
+ * that herdr always answers `pane.send_text` synchronously, including with
+ * a real `HerdrProtocolError` (e.g. `pane_not_found`) when the target pane
+ * doesn't exist. `{ discard: true }` discards errors along with successes —
+ * confirmed via a local RpcTest probe that a failing handler's error never
+ * reaches a `discard: true` caller, `Effect.runPromiseExit` reports Success.
+ * Using it here would silently swallow exactly the failures this
+ * combinator's own signature promises (`HerdrProtocolError` in the error
+ * channel), so this implementation awaits the ack normally instead. The
+ * "fire-and-forget" ergonomic the issue actually wants — not blocking on
+ * the pane's shell finishing the command — falls out for free: `pane.send_text`
+ * only acks that the text was typed into the pty, not that the shell
+ * finished running it (that's slice 6's `waitForOutput`, a separate call).
+ */
+export const runInPane: {
+  (pane: Pane, text: string): Effect.Effect<void, HerdrProtocolError | RpcClientError, HerdrSession>
+  (text: string): (pane: Pane) => Effect.Effect<void, HerdrProtocolError | RpcClientError, HerdrSession>
+} = Function.dual(
+  (args) => isPaneArg(args[0]),
+  (pane: Pane, text: string) =>
+    Effect.gen(function*() {
+      const session = yield* HerdrSession
+      yield* session.rpc["pane.send_text"]({ pane_id: pane.id, text: text + "\n" })
+    }),
+)
