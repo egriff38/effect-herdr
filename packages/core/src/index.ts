@@ -35,4 +35,5 @@ export * as HerdrConnection from "./HerdrConnection.js"
 export * as HerdrSession from "./HerdrSession.js"
 
 // Domain-shaped combinators — the primary API surface (case C)
-export * from "./operations.js"
+// Split into operations/{pane,focus,current}.ts per hunk review @#3
+export * from "./operations/index.js"
