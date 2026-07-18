@@ -1,70 +1,115 @@
 /**
- * The connection primitive (D3).
+ * The connection primitive (D3, corrected per D4 — see docs/design.md).
  *
  * Three tiers exposed:
- *   - `HerdrConnection.make(opts)`  — scoped Effect. The advanced form.
- *   - `HerdrConnection.layer(opts)` — bring-your-own-config Layer.
- *   - `HerdrConnection.Live`        — sound-defaults Layer, resolves via config.
- *   - `HerdrConnection.byName`      — LayerMap<sessionName, ...> for multi-session callers (@180).
+ *   - `make(opts)`  — scoped Effect. The advanced form (case B — e.g. the
+ *                     E2E harness — brackets lifetime explicitly).
+ *   - `layer(opts)` — bring-your-own-config Layer.
+ *   - `Live`        — sound-defaults Layer, resolves via `HerdrSocketPathConfig`.
  *
- * The connection hard-codes to `HerdrRpcs` (@143). v2 will add a `serve`
- * method for `RpcServer<PluginRpcs>` running over the same connection.
+ * Hard-coded to `HerdrRpcs` (@143) — not generic. v2 will add a `serve`
+ * method for `RpcServer<PluginRpcs>` running over the same connection
+ * primitive; that is additive, not a rewrite of this file.
+ *
+ * D4 correction: herdr's socket closes after exactly one request/reply for
+ * ordinary methods (verified empirically — see HerdrWireProtocol.ts's header
+ * comment for the full account). `make`/`layer`/`Live` no longer hold open a
+ * single persistent socket for the connection's lifetime; each RPC call
+ * dials its own fresh connection internally (see `makeHerdrProtocol`).
+ * `rpc` still reads as one long-lived client from the caller's perspective —
+ * the reconnect-per-call cost is hidden behind this module, not exposed.
  */
 
-import type { Effect, Layer, LayerMap, Scope, Stream } from "effect"
-import type { HerdrConnectError } from "./protocol/errors.js"
-import type { HerdrRpcs } from "./protocol/HerdrRpcs.js"
+import { Context, Effect, Layer, Scope } from "effect"
+import { RpcClient, RpcClientError, RpcGroup } from "effect/unstable/rpc"
+import { HerdrSocketPathConfig, socketFileExists } from "./config.js"
+import { makeHerdrProtocol } from "./HerdrWireProtocol.js"
+import { ConnectionRefused, SocketFileMissing, TransportOpenFailed } from "./protocol/errors.js"
+import { HerdrRpcs } from "./protocol/HerdrRpcs.js"
 
-// Runtime type stand-in for RpcClient<HerdrRpcs> until real Rpc types land.
-type HerdrRpcClient = unknown /* RpcClient.RpcClient<typeof HerdrRpcs> */
+export interface HerdrConnectionShape {
+  readonly rpc: RpcClient.RpcClient<RpcGroup.Rpcs<typeof HerdrRpcs>, RpcClientError.RpcClientError>
+}
 
 /**
- * Small service surface (@211-a). Callers who want ergonomic operations
- * import from `operations.ts`; this service exposes primitives only.
+ * `Context.Service` tag. Deliberately minimal — just the typed client.
+ * `disconnects` (connection-scoped events) is a slice-9 addition (issue #10);
+ * it does not exist as a placeholder field here because a field that is
+ * always `Stream.empty` would misrepresent a real capability as already
+ * implemented. Slice 9 adds it as new surface, not a filled-in stub.
+ *
+ * No default implementation — a program that never provides `make`/`layer`/
+ * `Live` fails at runtime with a "service not found" defect, which is the
+ * correct behavior for a resource this load-bearing.
  */
-export declare class HerdrConnection /* extends Context.Service<HerdrConnection, {
-  readonly rpc: HerdrRpcClient
-  readonly disconnects: Stream.Stream<HerdrConnectError, never>
-}>()("effect-herdr/HerdrConnection") {} */ {
-  readonly _tag: "HerdrConnection"
+export class HerdrConnection extends Context.Service<HerdrConnection, HerdrConnectionShape>()(
+  "effect-herdr/HerdrConnection",
+) {}
+
+/**
+ * Verify the connection actually works by round-tripping `ping`. herdr's
+ * socket has no handshake beyond TCP/unix-domain connect, so the only
+ * reliable "is this a live herdr server" check is a real RPC call.
+ */
+const verifyLive = (
+  rpc: HerdrConnectionShape["rpc"],
+  socketPath: string,
+): Effect.Effect<void, ConnectionRefused | TransportOpenFailed> => {
+  const pinged = Effect.asVoid(rpc.ping())
+  return Effect.mapError(pinged, (error) => {
+    if ("reason" in error && error.reason._tag === "SocketOpenError") {
+      return new ConnectionRefused({ socketPath, cause: error.reason })
+    }
+    return new TransportOpenFailed({ socketPath, cause: error })
+  })
 }
 
 /**
  * Scoped constructor. Advanced callers (case B — E2E harness) bracket
- * lifetime themselves. Fails at acquire time if the socket file is
- * missing or refuses connection.
+ * lifetime themselves. Fails at acquire time — checks the socket file
+ * exists, builds the per-call-dial protocol, and round-trips `ping` to
+ * prove liveness — before returning, per D3's "fail loud at Layer-build
+ * time" requirement. No upfront persistent socket is opened (D4): each RPC
+ * call, including this `ping`, dials its own connection internally.
  */
-export declare const make: (
+export const make = (
   options: { readonly socketPath: string },
-) => Effect.Effect<
-  { readonly rpc: HerdrRpcClient; readonly disconnects: Stream.Stream<HerdrConnectError, never> },
-  HerdrConnectError,
-  Scope.Scope
->
+): Effect.Effect<HerdrConnectionShape, SocketFileMissing | ConnectionRefused | TransportOpenFailed, Scope.Scope> =>
+  Effect.gen(function*() {
+    const { socketPath } = options
+
+    if (!socketFileExists(socketPath)) {
+      return yield* new SocketFileMissing({ socketPath })
+    }
+
+    const protocol = yield* makeHerdrProtocol(socketPath)
+    const rpc = yield* RpcClient.make(HerdrRpcs).pipe(
+      Effect.provideService(RpcClient.Protocol, protocol),
+    )
+
+    yield* verifyLive(rpc, socketPath)
+
+    return { rpc }
+  })
 
 /**
- * Bring-your-own-config Layer. `Layer.scoped` internally.
+ * Bring-your-own-config Layer form. Any `Scope` requirement from `make` is
+ * absorbed into the layer's own scope by `Layer.effect`.
  */
-export declare const layer: (
+export const layer = (
   options: { readonly socketPath: string },
-) => Layer.Layer<HerdrConnection, HerdrConnectError>
+): Layer.Layer<HerdrConnection, SocketFileMissing | ConnectionRefused | TransportOpenFailed> =>
+  Layer.effect(HerdrConnection, make(options))
 
 /**
- * Sound-defaults Layer (D3). Reads `HerdrSocketPathConfig` (@187), falls
- * back through env → default socket path.
- *
- * Implementation-shape reminder: this is `Layer.unwrap(Effect.map(resolve, layer))`.
+ * Sound-defaults Layer (D3). Reads `HerdrSocketPathConfig` — env
+ * `HERDR_SOCKET_PATH` then `~/.config/herdr/herdr.sock`. Fails at
+ * Layer-build time if the resolved path has no live server.
  */
-export declare const Live: Layer.Layer<HerdrConnection, HerdrConnectError>
-
-/**
- * LayerMap for talking to multiple named sessions in one program (@180).
- * Each key gets its own cached connection with idle-TTL; entries close
- * when unused past the TTL. Advanced usage only — case C's default is one
- * session, one connection.
- */
-export declare const byName: Effect.Effect<
-  LayerMap.LayerMap<string /* session name */, HerdrConnection, HerdrConnectError>,
-  never,
-  Scope.Scope
->
+export const Live: Layer.Layer<HerdrConnection, SocketFileMissing | ConnectionRefused | TransportOpenFailed> = Layer
+  .unwrap(
+    Effect.gen(function*() {
+      const socketPath = yield* HerdrSocketPathConfig
+      return layer({ socketPath })
+    }),
+  )

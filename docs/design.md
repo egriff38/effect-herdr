@@ -127,6 +127,29 @@ If the resolved socket file doesn't exist or fails to accept a connection, `Herd
 
 ---
 
+## D4. CORRECTION — herdr's socket closes after one request; per-call dial required
+
+**Discovered during implementation of issue #2 (slice 1), not during grilling.** Empirically verified three independent ways (raw `nc -U`, a Python `socket` client, and this SDK's own E2E test hanging indefinitely) that herdr's socket closes the underlying connection immediately after answering exactly one request/reply. This is real, universal behavior — not a bug in any client, not session-specific.
+
+Herdr's own docs say it, easy to underweight on first read: *"Event subscriptions keep the connection open after the initial response."* By omission, every other method does NOT keep the connection open.
+
+**What this invalidates.** D1–D3 assumed the opposite: one persistent socket, opened once, handing out a reusable `RpcClient` for the connection's lifetime, with many calls multiplexed over it (matching effect-smol's own `RpcClient.makeProtocolSocket`, which assumes an HTTP-keep-alive- or WebSocket-shaped transport). Herdr's socket is neither of those for ordinary request/reply methods.
+
+**Fix — per-call dial, hidden behind the existing surface.** `HerdrConnection`'s wire adapter (`HerdrWireProtocol.ts`) no longer holds one socket open for the connection's lifetime. Every `send` call:
+
+1. Dials a fresh unix-socket connection to the resolved `socketPath`.
+2. Writes the one request line.
+3. Reads exactly one reply line (via a `Deferred`-backed read loop, forked scoped to the per-call `Effect.scoped` block).
+4. Decodes it, delivers it to the waiting `RpcClient` call, and lets the scope close — which closes the socket.
+
+`RpcClient.Protocol`'s `send`/`run` split absorbs this cleanly: `send` does the full dial-write-read-close cycle per call; `run` only registers the delivery callback (there's no shared connection to run a loop against).
+
+**What stays the same.** The caller-facing shape (`conn.rpc["workspace.list"]()`, `conn.rpc.ping()`) is byte-for-byte identical to what D1–D3 designed. The reconnect-per-call cost is real (each call pays a fresh unix-socket handshake) but is entirely internal to `HerdrWireProtocol.ts` — no downstream slice (2 through 8) needs to change because of this correction. Verified directly: a `HerdrConnection` built via `make()` successfully served two independent sequential calls (`workspace.list` then `ping`) in the same debug session.
+
+**What's still open.** `events.subscribe` (slice 9, issue #10) is the one real exception — it genuinely needs a persistent connection for the initial ack plus pushed events. Slice 9 will dial its own dedicated long-lived connection for that specific case, separate from `HerdrWireProtocol.ts`'s per-call dial path. `HerdrConnection.disconnects` (also slice 9) likewise needs its own connection-lifecycle model once that work starts — the placeholder-free design from D3 (no `Stream.empty` field pretending to be implemented) turned out to be the right call, since "disconnects" doesn't even make sense for a connection that's never actually persistent in the first place.
+
+---
+
 ## Deferred to grilling
 
 - Full `HerdrRpcs` / `PluginRpcs` group shapes (85 methods, protocol 16, captured in `scripts/herdr-schema.json` — needs curation, not every method is user-facing)
