@@ -34,6 +34,10 @@ export * as HerdrConnection from "./HerdrConnection.js"
 // Service layer (D2, @211-a)
 export * as HerdrSession from "./HerdrSession.js"
 
+// Trivial seam-proving combinator (issue #3) — real domain combinators land
+// in later slices under operations/
+export { listWorkspaces } from "./listWorkspaces.js"
+
 // Domain-shaped combinators — the primary API surface (case C)
 // Split into operations/{pane,focus,current}.ts per hunk review @#3
 export * from "./operations/index.js"
