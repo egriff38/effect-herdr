@@ -13,6 +13,7 @@ import { Effect, Scope } from "effect"
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
+import { createConnection } from "node:net"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -86,3 +87,50 @@ export const acquire: Effect.Effect<HerdrTestServer, Error, Scope.Scope> = Effec
       }
     }),
 )
+
+/**
+ * Create a workspace as a test fixture, via a raw unix-socket JSON-lines
+ * request — deliberately NOT through the SDK-under-test's `HerdrConnection`,
+ * for the same reason `acquire` shells out to the herdr binary: fixture
+ * setup must not depend on the thing being tested. Returns the freshly
+ * created workspace/tab/pane ids so E2E tests have a real target to read.
+ */
+export const createWorkspaceFixture = (
+  socketPath: string,
+  label: string,
+): Effect.Effect<{ readonly workspaceId: string; readonly tabId: string; readonly paneId: string }, Error> =>
+  Effect.tryPromise({
+    try: () =>
+      new Promise((resolve, reject) => {
+        const socket = createConnection(socketPath, () => {
+          socket.write(JSON.stringify({ id: "fixture", method: "workspace.create", params: { label } }) + "\n")
+        })
+        let buf = ""
+        socket.on("data", (chunk) => {
+          buf += String(chunk)
+          const newline = buf.indexOf("\n")
+          if (newline === -1) return
+          socket.end()
+          const response = JSON.parse(buf.slice(0, newline)) as {
+            readonly error?: { readonly message: string }
+            readonly result?: {
+              readonly workspace: { readonly workspace_id: string }
+              readonly tab: { readonly tab_id: string }
+              readonly root_pane: { readonly pane_id: string }
+            }
+          }
+          if (response.error !== undefined) {
+            reject(new Error(response.error.message))
+            return
+          }
+          const result = response.result!
+          resolve({
+            workspaceId: result.workspace.workspace_id,
+            tabId: result.tab.tab_id,
+            paneId: result.root_pane.pane_id,
+          })
+        })
+        socket.on("error", reject)
+      }),
+    catch: (e) => (e instanceof Error ? e : new Error(String(e))),
+  })

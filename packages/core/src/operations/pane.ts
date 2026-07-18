@@ -4,117 +4,57 @@
  * These operate on `Pane` identity (not `PaneSnapshot`) — none of them
  * need the mutable state of the pane, only its stable id. Callers who
  * need current state read it via `focus.ts` combinators or `snapshotPane`
- * from `state.ts`.
- *
- * Dual-shaped combinators use Effect's `dual` (2-arity) for both
- * data-first and data-last styles:
- *
- *   yield* runInPane(pane, "npm test")
- *   pane.pipe(runInPane("npm test"))
- *
- * Single-argument combinators are plain functions — no `dual` because
- * there is nothing to curry against.
+ * from this module.
  */
 
-import type { Duration, Effect, Stream } from "effect"
-import type { HerdrSession } from "../HerdrSession.js"
+import { DateTime, Effect } from "effect"
+import { HerdrSession } from "../HerdrSession.js"
 import type { HerdrProtocolError } from "../protocol/errors.js"
-import type { Pane, PaneSnapshot, Workspace } from "../protocol/schemas.js"
-
-// =============================================================================
-// Splitting
-// =============================================================================
-
-export interface SplitOptions {
-  readonly direction?: "right" | "down"
-  readonly focus?: boolean
-}
+import type { PaneId, PaneSnapshot, Workspace } from "../protocol/schemas.js"
+import type { PaneInfoWire } from "../protocol/HerdrRpcs.js"
+import type { RpcClientError } from "effect/unstable/rpc/RpcClientError"
 
 /**
- * Split a pane. Returns the new sibling pane (identity — the caller can
- * `snapshotPane` if they want its state).
+ * Decode herdr's raw `PaneInfoWire` (from `pane.get` / `pane.list`) into
+ * the SDK's `PaneSnapshot`. `capturedAt` is stamped at decode time via
+ * Effect's Clock (through `DateTime.now`), not the wire — herdr does not
+ * send a capture timestamp.
  */
-export declare const splitPane: {
-  (pane: Pane, options?: SplitOptions): Effect.Effect<Pane, HerdrProtocolError, HerdrSession>
-  (options?: SplitOptions): (pane: Pane) => Effect.Effect<Pane, HerdrProtocolError, HerdrSession>
-}
-
-// =============================================================================
-// Input — string batch or streaming
-// =============================================================================
+const decodePaneSnapshot = (wire: PaneInfoWire): Effect.Effect<PaneSnapshot> =>
+  Effect.map(DateTime.now, (capturedAt) => ({
+    id: wire.pane_id as PaneId,
+    tabId: wire.tab_id as PaneSnapshot["tabId"],
+    workspaceId: wire.workspace_id as PaneSnapshot["workspaceId"],
+    revision: wire.revision,
+    cwd: wire.cwd ?? "",
+    agent: wire.agent ?? undefined,
+    agentStatus: wire.agent_status,
+    focused: wire.focused,
+    capturedAt,
+  }))
 
 /**
- * Type input into a pane's live shell. Two overload groups per input kind
- * (rather than a sum-typed argument) so TypeScript can infer the return's
- * error and requirement channels cleanly without a conditional-type detour.
- *
- * - `string`: single-shot, sends text + Enter (matches `herdr pane run` semantics)
- * - `Stream<string, E, R>`: real-time chunk pipe, no implicit Enter (@237).
- *                           Backpressure via the connection's Ack semantics.
- *                           The stream's E and R propagate into the return.
+ * List panes in a workspace. Returns snapshots (herdr's `pane.list` RPC
+ * returns full records, so giving back only identity would be lossy).
  */
-export declare const runInPane: {
-  // batch
-  (pane: Pane, text: string): Effect.Effect<void, HerdrProtocolError, HerdrSession>
-  (text: string): (pane: Pane) => Effect.Effect<void, HerdrProtocolError, HerdrSession>
-
-  // streaming
-  <E, R>(pane: Pane, chunks: Stream.Stream<string, E, R>): Effect.Effect<
-    void,
-    HerdrProtocolError | E,
-    HerdrSession | R
-  >
-  <E, R>(chunks: Stream.Stream<string, E, R>): (
-    pane: Pane,
-  ) => Effect.Effect<void, HerdrProtocolError | E, HerdrSession | R>
-}
-
-// =============================================================================
-// Output — streaming
-// =============================================================================
-
-export interface WaitOptions {
-  readonly regex?: boolean
-  readonly timeout?: Duration.Input
-}
-
-export declare class WaitError /* extends Data.TaggedError("WaitError") */ {
-  readonly _tag: "WaitError"
-  readonly reason: "timeout" | "pane_closed"
-}
-
-/**
- * Stream matched output chunks from a pane. Real streaming RPC
- * (`pane.wait_for_output` / `RpcSchema.Stream`). Callers close the stream
- * via `Stream.take` / interruption / scope close.
- */
-export declare const waitForOutput: {
-  (pane: Pane, match: string, options?: WaitOptions): Stream.Stream<
-    string,
-    HerdrProtocolError | WaitError,
-    HerdrSession
-  >
-  (match: string, options?: WaitOptions): (
-    pane: Pane,
-  ) => Stream.Stream<string, HerdrProtocolError | WaitError, HerdrSession>
-}
-
-// =============================================================================
-// Listing / lookup
-// =============================================================================
-
-/**
- * List panes in a workspace. Returns snapshots (herdr's pane.list RPC
- * returns full records).
- */
-export declare const listPanes: (
+export const listPanes = (
   workspace: Workspace,
-) => Effect.Effect<ReadonlyArray<PaneSnapshot>, HerdrProtocolError, HerdrSession>
+): Effect.Effect<ReadonlyArray<PaneSnapshot>, HerdrProtocolError | RpcClientError, HerdrSession> =>
+  Effect.gen(function*() {
+    const session = yield* HerdrSession
+    const result = yield* session.rpc["pane.list"]({ workspace_id: workspace.id })
+    return yield* Effect.all(result.panes.map(decodePaneSnapshot))
+  })
 
 /**
  * Look up a pane's current state. Round-trips to herdr; the returned
- * `PaneSnapshot` is fresh.
+ * `PaneSnapshot` is fresh as of this call.
  */
-export declare const snapshotPane: (
-  pane: Pane,
-) => Effect.Effect<PaneSnapshot, HerdrProtocolError, HerdrSession>
+export const snapshotPane = (
+  pane: { readonly id: PaneId },
+): Effect.Effect<PaneSnapshot, HerdrProtocolError | RpcClientError, HerdrSession> =>
+  Effect.gen(function*() {
+    const session = yield* HerdrSession
+    const result = yield* session.rpc["pane.get"]({ pane_id: pane.id })
+    return yield* decodePaneSnapshot(result.pane)
+  })

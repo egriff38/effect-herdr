@@ -8,6 +8,14 @@
  * most fields herdr reports for a pane — cwd, agent, agentStatus, focused —
  * genuinely change during the pane's lifetime. Presenting them as `readonly`
  * fields on a single value object would misrepresent staleness.
+ *
+ * CORRECTION vs. the original sketch, found by checking herdr's real schema
+ * (scripts/herdr-schema.json) during implementation of issue #4: `revision`
+ * (herdr's own monotonic per-entity counter) exists ONLY on `PaneInfo` (and
+ * `AgentInfo`, unrelated to this SDK's v1 surface). `TabInfo` and
+ * `WorkspaceInfo` have no `revision` field at all. `PaneSnapshot` keeps
+ * `revision`; `TabSnapshot`/`WorkspaceSnapshot` do not claim a field herdr
+ * never sends.
  */
 import type { DateTime } from "effect"
 
@@ -65,32 +73,45 @@ export interface Workspace {
 // Snapshot types — point-in-time state captures
 // =============================================================================
 
-export interface SnapshotProvenance {
-  /** Herdr's own monotonic per-entity counter. Comparable across snapshots of the same entity. */
-  readonly revision: number
-  /** SDK-side capture time, sourced from Effect's Clock via DateTime.now. Diagnostics only. */
+/**
+ * `capturedAt` is common to every snapshot (SDK-side, from Effect's Clock —
+ * diagnostics only, never a source of ordering truth). `revision` is NOT
+ * common — only `PaneSnapshot` carries it, since only herdr's `PaneInfo`
+ * wire shape has that field.
+ */
+export interface SnapshotCaptured {
   readonly capturedAt: DateTime.Utc
 }
 
-export interface PaneSnapshot extends Pane, SnapshotProvenance {
+export interface PaneSnapshot extends Pane, SnapshotCaptured {
+  /** Herdr's own monotonic per-pane counter. Comparable across snapshots of the same pane. */
+  readonly revision: number
   readonly cwd: string
   readonly agent: Agent | undefined
   readonly agentStatus: AgentStatus
   readonly focused: boolean
 }
 
-export interface TabSnapshot extends Tab, SnapshotProvenance {
+/**
+ * NOTE: no `activePaneId` field — herdr's `TabInfo` wire shape has no
+ * `active_pane_id` (confirmed against a live `tab.get` during slice 3
+ * implementation). The per-tab "active pane" concept only exists via
+ * `PaneLayoutSnapshot.focused_pane_id` (a `session.snapshot` sub-object),
+ * which is a distinct, richer type — not modeled in v1. `activePane`
+ * (operations/focus.ts) will source it from there when slice 8 lands.
+ */
+export interface TabSnapshot extends Tab, SnapshotCaptured {
   readonly label: string
-  readonly activePaneId: PaneId
   readonly focused: boolean
   readonly paneCount: number
+  readonly agentStatus: AgentStatus
 }
 
-export interface WorkspaceSnapshot extends Workspace, SnapshotProvenance {
+export interface WorkspaceSnapshot extends Workspace, SnapshotCaptured {
   readonly label: string
-  readonly cwd: string
   readonly activeTabId: TabId
   readonly focused: boolean
   readonly tabCount: number
   readonly paneCount: number
+  readonly agentStatus: AgentStatus
 }

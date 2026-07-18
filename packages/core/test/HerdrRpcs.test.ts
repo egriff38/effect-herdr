@@ -18,6 +18,16 @@ import { HerdrRpcs, PongResult, WorkspaceListResult } from "../src/protocol/Herd
  * a real (or genuinely absent) unix socket — faking that boundary would test
  * the fake, not the SDK.
  */
+
+const dyingHandlers = {
+  ping: () => Effect.die("ping not stubbed for this test"),
+  "workspace.list": () => Effect.die("workspace.list not stubbed for this test"),
+  "workspace.get": () => Effect.die("workspace.get not stubbed for this test"),
+  "tab.get": () => Effect.die("tab.get not stubbed for this test"),
+  "pane.list": () => Effect.die("pane.list not stubbed for this test"),
+  "pane.get": () => Effect.die("pane.get not stubbed for this test"),
+} as const
+
 describe("HerdrRpcs", () => {
   test("ping round-trips through an in-memory client/server pair", async () => {
     const program = Effect.gen(function*() {
@@ -30,8 +40,8 @@ describe("HerdrRpcs", () => {
         program.pipe(
           Effect.provide(
             HerdrRpcs.toLayer({
+              ...dyingHandlers,
               ping: () => Effect.succeed(new PongResult({ type: "pong" })),
-              "workspace.list": () => Effect.die("not used in this test"),
             }),
           ),
         ),
@@ -52,7 +62,7 @@ describe("HerdrRpcs", () => {
         program.pipe(
           Effect.provide(
             HerdrRpcs.toLayer({
-              ping: () => Effect.die("not used in this test"),
+              ...dyingHandlers,
               "workspace.list": () =>
                 Effect.succeed(
                   new WorkspaceListResult({

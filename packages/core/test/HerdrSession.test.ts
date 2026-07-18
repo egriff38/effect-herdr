@@ -25,6 +25,10 @@ const fakeConnectionLayer = (handlers: {
           HerdrRpcs.toLayer({
             ping: handlers.ping ?? (() => Effect.die("ping not stubbed")),
             "workspace.list": handlers["workspace.list"] ?? (() => Effect.die("workspace.list not stubbed")),
+            "workspace.get": () => Effect.die("workspace.get not stubbed"),
+            "tab.get": () => Effect.die("tab.get not stubbed"),
+            "pane.list": () => Effect.die("pane.list not stubbed"),
+            "pane.get": () => Effect.die("pane.get not stubbed"),
           }),
         ),
       )
