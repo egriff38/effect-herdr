@@ -87,6 +87,7 @@ export type KnownHerdrErrorCode =
   | "internal_error"
   | "feature_disabled"
   | "stream_conflict"
+  | "timeout"
 
 export type HerdrErrorCode = KnownHerdrErrorCode | (string & {})
 
@@ -104,5 +105,28 @@ export class HerdrProtocolError extends Schema.ErrorClass<HerdrProtocolError>("e
 }) {
   override get message(): string {
     return `herdr:${this.code}: ${this.rawMessage}`
+  }
+}
+
+// =============================================================================
+// Operation errors — SDK-side, never cross the wire
+// =============================================================================
+
+/**
+ * `operations/pane.ts`'s `waitForOutput` (issue #7/slice 6) failure.
+ * `Data.TaggedError`, not `Schema.ErrorClass` — unlike `HerdrProtocolError`
+ * this never crosses the wire itself; it's the SDK's own interpretation of
+ * two distinct failure modes: `"timeout"` (herdr's own `pane.wait_for_output`
+ * timed out — mapped from a `HerdrProtocolError` whose `code === "timeout"`,
+ * confirmed live during implementation) and `"pane_closed"` (reserved for a
+ * future distinction if herdr ever surfaces "pane went away mid-wait" as a
+ * separate code from plain `pane_not_found`; no live evidence of a distinct
+ * code exists yet, so callers should not expect this reason today).
+ */
+export class WaitError extends Data.TaggedError("WaitError")<{
+  readonly reason: "timeout" | "pane_closed"
+}> {
+  override get message(): string {
+    return `waitForOutput failed: ${this.reason}`
   }
 }

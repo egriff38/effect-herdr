@@ -34,6 +34,24 @@
  *   Success:  {"id":"<id>","result":{"type":"...", ...fields}}
  *   Error:    {"id":"<id>","error":{"code":"...","message":"..."}}
  *
+ * FOURTH CORRECTION, discovered during implementation of issue #7/slice 6:
+ * herdr's wire error body uses the key `message`, but `HerdrProtocolError`'s
+ * schema (`protocol/errors.ts`) declares the field `rawMessage` (chosen to
+ * avoid colliding with `Error.prototype.message`, which the schema's own
+ * getter overrides). Passing `parsed.error` straight through as the Fail
+ * cause's `error` therefore decoded successfully as `Exit`'s outer schema
+ * but failed `HerdrProtocolError`'s own field decode with a `SchemaError`
+ * defect (`Effect.Die`, not the intended typed failure) on EVERY protocol
+ * error — silently breaking every `Effect.catchTag("HerdrProtocolError", …)`
+ * call site in the SDK (e.g. `operations/pane.ts`'s `waitForOutput`'s
+ * timeout-code check). `decodeReplyLine` below now maps
+ * `{code, message}` → `{_tag: "HerdrProtocolError", code, rawMessage: message}`
+ * before handing it to the `RpcClient`'s `Schema.Exit` decoder — the added
+ * `_tag` matches `HerdrProtocolError`'s own `Schema.tag("HerdrProtocolError")`
+ * discriminator field, required for the schema's union-member match to
+ * succeed (the RPC's declared `error` schema decodes a union of every
+ * tagged error variant the group's methods can fail with).
+ *
  * Every `HerdrRpcs` tag IS the herdr `method` string verbatim (e.g.
  * `"workspace.list"`) — this only works because `Rpc.make` tags in
  * `HerdrRpcs.ts` are written as herdr's dotted method names, not
@@ -116,7 +134,10 @@ const decodeReplyLine = (line: string): FromServerEncoded | undefined => {
       requestId: parsed.id,
       exit: {
         _tag: "Failure",
-        cause: [{ _tag: "Fail", error: parsed.error }],
+        cause: [{
+          _tag: "Fail",
+          error: { _tag: "HerdrProtocolError", code: parsed.error.code, rawMessage: parsed.error.message },
+        }],
       },
     }
   }

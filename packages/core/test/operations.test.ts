@@ -1,14 +1,15 @@
 import { describe, expect, test } from "bun:test"
-import { DateTime, Effect, Layer, Option } from "effect"
+import { Cause, DateTime, Effect, Layer, Option, Stream } from "effect"
 import { RpcTest } from "effect/unstable/rpc"
 import { HerdrConnection } from "../src/HerdrConnection.js"
-import { HerdrProtocolError } from "../src/protocol/errors.js"
+import { HerdrProtocolError, WaitError } from "../src/protocol/errors.js"
 import {
   HerdrRpcs,
   OkResult,
   PaneInfoResult,
   PaneListResult,
   PaneReadResult,
+  PaneWaitForOutputResult,
   PongResult,
   SessionSnapshotResult,
   TabInfoResult,
@@ -18,7 +19,7 @@ import {
 import * as HerdrSession from "../src/HerdrSession.js"
 import { currentPane, currentTab, currentWorkspace } from "../src/operations/current.js"
 import { activePane, activeTab, focusedPane, focusedTab, focusedWorkspace } from "../src/operations/focus.js"
-import { focusPane, listPanes, runInPane, snapshotPane, splitPane } from "../src/operations/pane.js"
+import { focusPane, listPanes, runInPane, snapshotPane, splitPane, waitForOutput } from "../src/operations/pane.js"
 import type { PaneId, TabId, WorkspaceId } from "../src/protocol/schemas.js"
 
 /**
@@ -48,6 +49,12 @@ type Handlers = {
     readonly pane_id: string
     readonly source: "visible" | "recent" | "recent_unwrapped" | "detection"
   }) => Effect.Effect<PaneReadResult>
+  readonly "pane.wait_for_output"?: (p: {
+    readonly pane_id: string
+    readonly source: "visible" | "recent" | "recent_unwrapped" | "detection"
+    readonly match: { readonly type: "substring" | "regex"; readonly value: string }
+    readonly timeout_ms?: number | undefined
+  }) => Effect.Effect<PaneWaitForOutputResult, HerdrProtocolError>
 }
 
 const fakeConnectionLayer = (handlers: Handlers) =>
@@ -67,6 +74,8 @@ const fakeConnectionLayer = (handlers: Handlers) =>
             "session.snapshot": handlers["session.snapshot"] ?? (() => Effect.die("session.snapshot not stubbed")),
             "pane.send_text": handlers["pane.send_text"] ?? (() => Effect.die("pane.send_text not stubbed")),
             "pane.read": handlers["pane.read"] ?? (() => Effect.die("pane.read not stubbed")),
+            "pane.wait_for_output": handlers["pane.wait_for_output"]
+              ?? (() => Effect.die("pane.wait_for_output not stubbed")),
           }),
         ),
       )
@@ -406,6 +415,195 @@ describe("operations/pane", () => {
     )
 
     expect(result._tag).toBe("Failure")
+  })
+
+  test("waitForOutput emits the matched_line from a successful pane.wait_for_output reply", async () => {
+    const pane = { id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }
+    let dispatched:
+      | {
+        readonly pane_id: string
+        readonly source: string
+        readonly match: { readonly type: string; readonly value: string }
+        readonly timeout_ms?: number | undefined
+      }
+      | undefined
+
+    const chunks = await Effect.runPromise(
+      Effect.scoped(
+        waitForOutput(pane, "ready").pipe(
+          Stream.runCollect,
+          Effect.provide(HerdrSession.layer),
+          Effect.provide(
+            fakeConnectionLayer({
+              "pane.wait_for_output": (p) => {
+                dispatched = p
+                return Effect.succeed(
+                  new PaneWaitForOutputResult({
+                    type: "output_matched",
+                    pane_id: "w1:p1",
+                    revision: 0,
+                    matched_line: "echo ready",
+                    read: {
+                      pane_id: "w1:p1",
+                      workspace_id: "w1",
+                      tab_id: "w1:t1",
+                      source: "recent_unwrapped",
+                      format: "text",
+                      text: "echo ready\nready\n",
+                      revision: 0,
+                      truncated: false,
+                    },
+                  }),
+                )
+              },
+            }),
+          ),
+        ),
+      ),
+    )
+
+    expect(Array.from(chunks)).toEqual(["echo ready"])
+    expect(dispatched?.pane_id).toBe("w1:p1")
+    expect(dispatched?.source).toBe("recent")
+    expect(dispatched?.match).toEqual({ type: "substring", value: "ready" })
+    expect(dispatched?.timeout_ms).toBeUndefined()
+  })
+
+  test("waitForOutput sends a regex match when options.regex is true, and forwards timeout_ms", async () => {
+    const pane = { id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }
+    let dispatchedMatch: { readonly type: string; readonly value: string } | undefined
+    let dispatchedTimeout: number | undefined
+
+    await Effect.runPromise(
+      Effect.scoped(
+        waitForOutput(pane, "READY-\\d+", { regex: true, timeout: "2 seconds" }).pipe(
+          Stream.runCollect,
+          Effect.provide(HerdrSession.layer),
+          Effect.provide(
+            fakeConnectionLayer({
+              "pane.wait_for_output": (p) => {
+                dispatchedMatch = p.match
+                dispatchedTimeout = p.timeout_ms
+                return Effect.succeed(
+                  new PaneWaitForOutputResult({
+                    type: "output_matched",
+                    pane_id: "w1:p1",
+                    revision: 0,
+                    matched_line: "echo READY-42",
+                    read: {
+                      pane_id: "w1:p1",
+                      workspace_id: "w1",
+                      tab_id: "w1:t1",
+                      source: "recent_unwrapped",
+                      format: "text",
+                      text: "echo READY-42\nREADY-42\n",
+                      revision: 0,
+                      truncated: false,
+                    },
+                  }),
+                )
+              },
+            }),
+          ),
+        ),
+      ),
+    )
+
+    expect(dispatchedMatch).toEqual({ type: "regex", value: "READY-\\d+" })
+    expect(dispatchedTimeout).toBe(2000)
+  })
+
+  test("waitForOutput maps a timeout-coded HerdrProtocolError to WaitError({ reason: \"timeout\" })", async () => {
+    const pane = { id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }
+
+    const result = await Effect.runPromiseExit(
+      Effect.scoped(
+        waitForOutput(pane, "will-never-appear", { timeout: "500 millis" }).pipe(
+          Stream.runCollect,
+          Effect.provide(HerdrSession.layer),
+          Effect.provide(
+            fakeConnectionLayer({
+              "pane.wait_for_output": () =>
+                Effect.fail(
+                  new HerdrProtocolError({ code: "timeout", rawMessage: "timed out waiting for output match" }),
+                ),
+            }),
+          ),
+        ),
+      ),
+    )
+
+    expect(result._tag).toBe("Failure")
+    if (result._tag === "Failure") {
+      expect(Cause.squash(result.cause)).toEqual(new WaitError({ reason: "timeout" }))
+    }
+  })
+
+  test("waitForOutput propagates a non-timeout HerdrProtocolError unchanged", async () => {
+    const pane = { id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }
+
+    const result = await Effect.runPromiseExit(
+      Effect.scoped(
+        waitForOutput(pane, "ready").pipe(
+          Stream.runCollect,
+          Effect.provide(HerdrSession.layer),
+          Effect.provide(
+            fakeConnectionLayer({
+              "pane.wait_for_output": () =>
+                Effect.fail(new HerdrProtocolError({ code: "pane_not_found", rawMessage: "pane not found" })),
+            }),
+          ),
+        ),
+      ),
+    )
+    expect(result._tag).toBe("Failure")
+    if (result._tag === "Failure") {
+      expect(Cause.squash(result.cause)).toEqual(
+        new HerdrProtocolError({ code: "pane_not_found", rawMessage: "pane not found" }),
+      )
+    }
+  })
+
+  test("waitForOutput dual-shape: data-first and data-last dispatch identical pane.wait_for_output calls", async () => {
+    const pane = { id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }
+    const wireResult = new PaneWaitForOutputResult({
+      type: "output_matched",
+      pane_id: "w1:p1",
+      revision: 0,
+      matched_line: "echo ready",
+      read: {
+        pane_id: "w1:p1",
+        workspace_id: "w1",
+        tab_id: "w1:t1",
+        source: "recent_unwrapped",
+        format: "text",
+        text: "echo ready\nready\n",
+        revision: 0,
+        truncated: false,
+      },
+    })
+
+    const dataFirst = await Effect.runPromise(
+      Effect.scoped(
+        waitForOutput(pane, "ready").pipe(
+          Stream.runCollect,
+          Effect.provide(HerdrSession.layer),
+          Effect.provide(fakeConnectionLayer({ "pane.wait_for_output": () => Effect.succeed(wireResult) })),
+        ),
+      ),
+    )
+    const dataLast = await Effect.runPromise(
+      Effect.scoped(
+        waitForOutput("ready")(pane).pipe(
+          Stream.runCollect,
+          Effect.provide(HerdrSession.layer),
+          Effect.provide(fakeConnectionLayer({ "pane.wait_for_output": () => Effect.succeed(wireResult) })),
+        ),
+      ),
+    )
+
+    expect(Array.from(dataFirst)).toEqual(["echo ready"])
+    expect(Array.from(dataLast)).toEqual(["echo ready"])
   })
 })
 

@@ -3,19 +3,19 @@
  *
  * v1 currently ships: `ping`, `workspace.list`, `workspace.get`, `pane.list`,
  * `pane.get`, `tab.get`, `pane.split`, `pane.focus`, `session.snapshot`,
- * `pane.send_text`, `pane.read`. Every subsequent slice adds methods to
- * this group.
+ * `pane.send_text`, `pane.read`, `pane.wait_for_output`. Every subsequent
+ * slice adds methods to this group.
  *
  * CORRECTION vs. the original design sketch: `pane.wait_for_output` is a
  * plain request/reply on herdr's wire (confirmed against
- * `scripts/herdr-schema.json` and herdr.dev/docs/socket-api/ during
- * implementation) — herdr blocks server-side until match/timeout and
+ * `scripts/herdr-schema.json` and a live probe during implementation of
+ * issue #7/slice 6) — herdr blocks server-side until match/timeout and
  * replies once. It is NOT `RpcSchema.Stream`. `events.subscribe` IS a real
- * server-push stream (ack on subscribe, then pushed events). Slice 9 will
- * add `events.subscribe` as `RpcSchema.Stream`; slice 6's `waitForOutput`
- * will be a plain request/reply wrapped to look stream-shaped at the
- * service layer if that ergonomic is still wanted, or changed to a plain
- * Effect — that's a slice-6 design decision, not a slice-1 concern.
+ * server-push stream (ack on subscribe, then pushed events); slice 9 adds
+ * that separately, outside this `RpcGroup` (see `HerdrConnection.ts`'s
+ * comments). `operations/pane.ts`'s `waitForOutput` (issue #7) wraps this
+ * one blocking RPC call as a single-element `Stream` — an ergonomic
+ * decision at the service layer, not a wire-level stream.
  *
  * SECOND CORRECTION (D4, docs/design.md): herdr's socket closes after
  * exactly one request/reply for ordinary methods. `HerdrWireProtocol.ts`
@@ -183,6 +183,51 @@ export class PaneReadResult extends Schema.Class<PaneReadResult>("PaneReadResult
   }),
 }) {}
 
+/**
+ * `pane.wait_for_output`'s `match` payload — a discriminated union of
+ * substring/regex matchers (confirmed via `scripts/herdr-schema.json`'s
+ * `OutputMatch` and live probing during implementation of issue #7). No
+ * existing discriminated-union example elsewhere in this codebase (every
+ * prior wire type is a flat struct), so this follows `Schema.Union` of two
+ * `type`-tagged `Schema.Struct`s — the natural encoding for a wire union
+ * whose members are distinguished by a literal field, mirroring how herdr
+ * itself models it.
+ */
+export const OutputMatch = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("substring"), value: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("regex"), value: Schema.String }),
+])
+export type OutputMatch = typeof OutputMatch.Type
+
+/**
+ * `pane.wait_for_output`'s success reply on a match (verified live during
+ * implementation of issue #7): `{"type":"output_matched","pane_id",
+ * "revision","matched_line","read":<PaneReadResult>}`. Nests the SAME
+ * `read` shape `PaneReadResult` above models — declared as a bare struct
+ * (not the `PaneReadResult` class itself) since here it's a nested field,
+ * not a top-level reply; `PaneReadResult`'s own `read` sub-struct schema
+ * is duplicated rather than referenced because `Schema.Class` fields
+ * aren't reusable as struct fragments without unwrapping.
+ */
+export class PaneWaitForOutputResult
+  extends Schema.Class<PaneWaitForOutputResult>("PaneWaitForOutputResult")({
+    type: Schema.Literal("output_matched"),
+    pane_id: Schema.String,
+    revision: Schema.Number,
+    matched_line: Schema.String,
+    read: Schema.Struct({
+      pane_id: Schema.String,
+      workspace_id: Schema.String,
+      tab_id: Schema.String,
+      source: Schema.Literals(["visible", "recent", "recent_unwrapped", "detection"]),
+      format: Schema.Literals(["text", "ansi"]),
+      text: Schema.String,
+      revision: Schema.Number,
+      truncated: Schema.Boolean,
+    }),
+  })
+{}
+
 // =============================================================================
 // The RpcGroup
 // =============================================================================
@@ -274,6 +319,28 @@ export const HerdrRpcs = RpcGroup.make(
       source: Schema.Literals(["visible", "recent", "recent_unwrapped", "detection"]),
     },
     success: PaneReadResult,
+    error: HerdrProtocolError,
+  }),
+  /**
+   * `pane.wait_for_output` — a BLOCKING plain request/reply (verified live
+   * during implementation of issue #7): herdr holds the connection open
+   * server-side until the match happens or `timeout_ms` elapses, then
+   * replies exactly once. On timeout it replies with a real
+   * `HerdrProtocolError` whose `code` is `"timeout"` (added to
+   * `KnownHerdrErrorCode` in `errors.ts`), not a distinct wire signal.
+   * Params per `scripts/herdr-schema.json`'s `PaneWaitForOutputParams`:
+   * `lines`/`strip_ansi` are also accepted server-side but unused by any
+   * current caller (`operations/pane.ts`'s `waitForOutput`), so only
+   * `pane_id`/`source`/`match`/`timeout_ms` are modeled here.
+   */
+  Rpc.make("pane.wait_for_output", {
+    payload: {
+      pane_id: Schema.String,
+      source: Schema.Literals(["visible", "recent", "recent_unwrapped", "detection"]),
+      match: OutputMatch,
+      timeout_ms: Schema.optional(Schema.Number),
+    },
+    success: PaneWaitForOutputResult,
     error: HerdrProtocolError,
   }),
 )

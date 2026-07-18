@@ -7,9 +7,9 @@
  * from this module.
  */
 
-import { DateTime, Effect, Function, Predicate } from "effect"
+import { DateTime, Duration, Effect, Function, Predicate, Stream } from "effect"
 import { HerdrSession } from "../HerdrSession.js"
-import type { HerdrProtocolError } from "../protocol/errors.js"
+import { HerdrProtocolError, WaitError } from "../protocol/errors.js"
 import type { Pane, PaneId, PaneSnapshot, Workspace } from "../protocol/schemas.js"
 import type { PaneInfoWire } from "../protocol/HerdrRpcs.js"
 import type { RpcClientError } from "effect/unstable/rpc/RpcClientError"
@@ -159,4 +159,86 @@ export const runInPane: {
       const session = yield* HerdrSession
       yield* session.rpc["pane.send_text"]({ pane_id: pane.id, text: text + "\n" })
     }),
+)
+
+/**
+ * Options for `waitForOutput`. `regex` selects `OutputMatch`'s `"regex"`
+ * variant over the default `"substring"`; `timeout` maps directly to the
+ * wire's own `pane.wait_for_output` `timeout_ms` — herdr blocks
+ * server-side and is the sole timeout mechanism (see the combinator's own
+ * doc comment for why no separate SDK-side timer races it).
+ */
+export interface WaitOptions {
+  readonly regex?: boolean
+  readonly timeout?: Duration.Input
+}
+
+/**
+ * Block until `match` appears in `pane`'s output, then emit it as a single
+ * chunk. Dual-shaped: data-first (`waitForOutput(pane, match, options)`)
+ * and data-last (`pane.pipe(waitForOutput(match, options))`), matching
+ * `splitPane`/`runInPane`'s pattern.
+ *
+ * Underneath: `pane.wait_for_output`, which is a BLOCKING plain
+ * request/reply on herdr's wire (verified live during implementation of
+ * issue #7) — herdr itself holds the connection open until match-or-
+ * timeout and replies exactly once. This combinator's `Stream` return type
+ * is a service-layer ergonomic (matching the issue's `Stream.take(1)`-off
+ * acceptance criterion), not a wire-level stream: `Stream.fromEffect` wraps
+ * the one RPC call. Emits the matched line — `read.matched_line` — rather
+ * than `read.read.text` (herdr's full read-buffer content since the pane's
+ * last read): a live probe against `echo ready` confirmed `matched_line`
+ * is exactly the shell line that satisfied the match (echoed command, no
+ * surrounding buffer noise), which is what "one chunk emitted containing
+ * ready" in the issue's E2E acceptance criterion expects.
+ *
+ * Uses `source: "recent"` — verified live to be the right default: it
+ * returns the pane's scrollback since the caller's last read (so a
+ * `runInPane` immediately before this call reliably surfaces that command's
+ * echo/output), unlike `"visible"` (only the current viewport, which a
+ * fast-scrolling shell can push the match out of) or `"detection"`
+ * (agent-status heuristics, unrelated to raw text matching). No ergonomic
+ * exposes a `source` override — callers needing `"visible"`/
+ * `"recent_unwrapped"`/`"detection"` semantics can dispatch
+ * `session.rpc["pane.wait_for_output"]` directly.
+ *
+ * herdr's own `timeout_ms` (from `options.timeout`, converted via
+ * `Duration.toMillis`) is the sole timeout mechanism — no SDK-side
+ * `Stream.timeoutFail` races it, since herdr already replies exactly once
+ * with a `code: "timeout"` `HerdrProtocolError` (verified live) after
+ * `timeout_ms` elapses; a second independent timer would only risk racing
+ * herdr's own accurate one. That protocol error is mapped to
+ * `WaitError({ reason: "timeout" })` here so callers get the SDK's own
+ * tagged error rather than a raw wire error code.
+ */
+export const waitForOutput: {
+  (
+    pane: Pane,
+    match: string,
+    options?: WaitOptions,
+  ): Stream.Stream<string, HerdrProtocolError | WaitError | RpcClientError, HerdrSession>
+  (
+    match: string,
+    options?: WaitOptions,
+  ): (pane: Pane) => Stream.Stream<string, HerdrProtocolError | WaitError | RpcClientError, HerdrSession>
+} = Function.dual(
+  (args) => isPaneArg(args[0]),
+  (pane: Pane, match: string, options?: WaitOptions) =>
+    Stream.fromEffect(
+      Effect.gen(function*() {
+        const session = yield* HerdrSession
+        const result = yield* session.rpc["pane.wait_for_output"]({
+          pane_id: pane.id,
+          source: "recent",
+          match: { type: options?.regex ? "regex" : "substring", value: match },
+          timeout_ms: options?.timeout === undefined ? undefined : Duration.toMillis(options.timeout),
+        }).pipe(
+          Effect.catchTag("HerdrProtocolError", (error): Effect.Effect<never, HerdrProtocolError | WaitError> =>
+            error.code === "timeout"
+              ? Effect.fail(new WaitError({ reason: "timeout" }))
+              : Effect.fail(error)),
+        )
+        return result.matched_line
+      }),
+    ),
 )
