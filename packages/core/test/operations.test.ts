@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { Cause, DateTime, Effect, Layer, Option, Stream } from "effect"
+import { Cause, Data, DateTime, Effect, Layer, Option, Stream } from "effect"
 import { RpcTest } from "effect/unstable/rpc"
 import { HerdrConnection } from "../src/HerdrConnection.js"
 import { HerdrProtocolError, WaitError } from "../src/protocol/errors.js"
@@ -415,6 +415,109 @@ describe("operations/pane", () => {
     )
 
     expect(result._tag).toBe("Failure")
+  })
+
+  test("streaming runInPane dispatches one pane.send_text per chunk, in order, verbatim (no newline appended)", async () => {
+    const pane = { id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }
+    const dispatched: Array<{ readonly pane_id: string; readonly text: string }> = []
+
+    await Effect.runPromise(
+      Effect.scoped(
+        runInPane(pane, Stream.make("hello ", "world", "\n")).pipe(
+          Effect.provide(HerdrSession.layer),
+          Effect.provide(
+            fakeConnectionLayer({
+              "pane.send_text": (p) => {
+                dispatched.push(p)
+                return Effect.succeed(new OkResult({ type: "ok" }))
+              },
+            }),
+          ),
+        ),
+      ),
+    )
+
+    expect(dispatched).toEqual([
+      { pane_id: "w1:p1", text: "hello " },
+      { pane_id: "w1:p1", text: "world" },
+      { pane_id: "w1:p1", text: "\n" },
+    ])
+  })
+
+  test("streaming runInPane dual-shape: data-first and data-last dispatch identical pane.send_text call sequences", async () => {
+    const pane = { id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }
+    const dispatchedDataFirst: Array<{ readonly pane_id: string; readonly text: string }> = []
+    const dispatchedDataLast: Array<{ readonly pane_id: string; readonly text: string }> = []
+
+    await Effect.runPromise(
+      Effect.scoped(
+        runInPane(pane, Stream.make("no-", "newline")).pipe(
+          Effect.provide(HerdrSession.layer),
+          Effect.provide(
+            fakeConnectionLayer({
+              "pane.send_text": (p) => {
+                dispatchedDataFirst.push(p)
+                return Effect.succeed(new OkResult({ type: "ok" }))
+              },
+            }),
+          ),
+        ),
+      ),
+    )
+    await Effect.runPromise(
+      Effect.scoped(
+        runInPane(Stream.make("no-", "newline"))(pane).pipe(
+          Effect.provide(HerdrSession.layer),
+          Effect.provide(
+            fakeConnectionLayer({
+              "pane.send_text": (p) => {
+                dispatchedDataLast.push(p)
+                return Effect.succeed(new OkResult({ type: "ok" }))
+              },
+            }),
+          ),
+        ),
+      ),
+    )
+
+    expect(dispatchedDataFirst).toEqual(dispatchedDataLast)
+    expect(dispatchedDataFirst).toEqual([
+      { pane_id: "w1:p1", text: "no-" },
+      { pane_id: "w1:p1", text: "newline" },
+    ])
+  })
+
+  test("streaming runInPane propagates a tagged stream error mid-stream (not swallowed alongside HerdrProtocolError)", async () => {
+    class MyStreamError extends Data.TaggedError("MyStreamError")<{ readonly reason: string }> {}
+
+    const pane = { id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }
+    const dispatched: Array<string> = []
+    const failingStream = Stream.concat(
+      Stream.make("chunk-1", "chunk-2"),
+      Stream.fail(new MyStreamError({ reason: "upstream broke" })),
+    ).pipe(Stream.concat(Stream.make("chunk-3-never-sent")))
+
+    const result = await Effect.runPromiseExit(
+      Effect.scoped(
+        runInPane(pane, failingStream).pipe(
+          Effect.provide(HerdrSession.layer),
+          Effect.provide(
+            fakeConnectionLayer({
+              "pane.send_text": (p) => {
+                dispatched.push(p.text)
+                return Effect.succeed(new OkResult({ type: "ok" }))
+              },
+            }),
+          ),
+        ),
+      ),
+    )
+
+    expect(dispatched).toEqual(["chunk-1", "chunk-2"])
+    expect(result._tag).toBe("Failure")
+    if (result._tag === "Failure") {
+      expect(Cause.squash(result.cause)).toEqual(new MyStreamError({ reason: "upstream broke" }))
+    }
   })
 
   test("waitForOutput emits the matched_line from a successful pane.wait_for_output reply", async () => {

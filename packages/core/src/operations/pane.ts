@@ -122,43 +122,94 @@ export const focusPane = (
   })
 
 /**
- * Batch input: type `text` into `pane` and submit it. Dual-shaped: data-first
- * (`runInPane(pane, text)`) and data-last (`pane.pipe(runInPane(text))`),
- * matching `splitPane`'s pattern.
+ * Type into `pane`. Dual-shaped and now four overloads deep: two batch
+ * (data-first `runInPane(pane, text)` / data-last `pane.pipe(runInPane(text))`,
+ * from slice 5/issue #6) and two streaming (data-first
+ * `runInPane(pane, chunks)` / data-last `pane.pipe(runInPane(chunks))`, added
+ * here in slice 7/issue #8) — `text` is a plain `string`, `chunks` a
+ * `Stream.Stream<string, E, R>`.
  *
  * Underneath: `pane.send_text`, herdr's ONLY text-input method (verified
  * live during implementation — there is no separate `pane.run`). herdr does
- * not append a trailing Enter itself, so this combinator appends `"\n"` to
- * the caller's string before dispatching — that's what makes this "batch"
- * (submit-and-move-on) rather than slice 7's streaming per-chunk sends,
- * which must NOT add a newline.
+ * not append a trailing Enter itself. The batch overloads append `"\n"` to
+ * the caller's string before dispatching a SINGLE `pane.send_text` call —
+ * that's what makes them "batch" (submit-and-move-on). The streaming
+ * overloads dispatch ONE `pane.send_text` per chunk, verbatim, with NO
+ * newline appended — the LLM-token-piping use case this exists for needs
+ * the caller to control exactly when Enter is submitted by putting `"\n"`
+ * inside a chunk themselves.
  *
- * CORRECTION vs. issue #6's own spec text: the issue describes dispatching
- * with `{ discard: true }` — Effect's `RpcClient` does support that option
- * (fires the request, never observes the reply), but it was verified live
- * that herdr always answers `pane.send_text` synchronously, including with
- * a real `HerdrProtocolError` (e.g. `pane_not_found`) when the target pane
- * doesn't exist. `{ discard: true }` discards errors along with successes —
- * confirmed via a local RpcTest probe that a failing handler's error never
- * reaches a `discard: true` caller, `Effect.runPromiseExit` reports Success.
- * Using it here would silently swallow exactly the failures this
- * combinator's own signature promises (`HerdrProtocolError` in the error
- * channel), so this implementation awaits the ack normally instead. The
- * "fire-and-forget" ergonomic the issue actually wants — not blocking on
- * the pane's shell finishing the command — falls out for free: `pane.send_text`
- * only acks that the text was typed into the pty, not that the shell
- * finished running it (that's slice 6's `waitForOutput`, a separate call).
+ * CORRECTION vs. issue #6's own spec text (batch) and issue #8's own spec
+ * text (streaming): both describe dispatching with `{ discard: true }` —
+ * Effect's `RpcClient` does support that option (fires the request, never
+ * observes the reply), but it was verified live that herdr always answers
+ * `pane.send_text` synchronously, including with a real `HerdrProtocolError`
+ * (e.g. `pane_not_found`) when the target pane doesn't exist. `{ discard:
+ * true }` discards errors along with successes — confirmed via a local
+ * RpcTest probe that a failing handler's error never reaches a `discard:
+ * true` caller, `Effect.runPromiseExit` reports Success. Using it here
+ * would silently swallow exactly the failures this combinator's own
+ * signature promises (`HerdrProtocolError` in the error channel), so this
+ * implementation awaits each ack normally instead. The "fire-and-forget"
+ * ergonomic the issue actually wants — not blocking on the pane's shell
+ * finishing the command — falls out for free: `pane.send_text` only acks
+ * that the text was typed into the pty, not that the shell finished running
+ * it (that's `waitForOutput`, a separate call).
+ *
+ * Backpressure for the streaming overloads: awaiting each `pane.send_text`
+ * round-trip before pulling the next chunk (`Stream.runForEach`, which
+ * consumes sequentially) is sufficient — herdr's dial-per-call wire model
+ * is one-request-one-reply per call anyway, so there is no separate queue
+ * to manage SDK-side (matches issue #8's explicit "no SDK-side queue
+ * management" requirement). Chunks are sent strictly in order because
+ * `Stream.runForEach` pulls-and-awaits one element at a time; nothing here
+ * parallelizes or reorders sends.
+ *
+ * Design decision — how the 4 overloads are typed: the runtime dispatch
+ * still goes through `Function.dual` with `isPaneArg` as the data-first
+ * predicate (same idiom `splitPane`/`waitForOutput` use), extended with an
+ * inline `Stream.isStream` check inside the shared body to pick
+ * batch-string vs. streaming-chunks semantics. But `Function.dual`'s own
+ * generic signature (`<DataLast, DataFirst>(pred, body): DataLast &
+ * DataFirst`) can only describe ONE payload shape per body function — it
+ * has no way to say "the payload is either `string` (fixed error channel)
+ * or `Stream<string, E, R>` (error channel widened by `E`)" and still let
+ * `E`/`R` flow through to the public overload's return type. So the public
+ * type of `runInPane` is declared as an explicit 4-signature call-signature
+ * object (the classic TS "overloads over one implementation" pattern) and
+ * the `Function.dual`-produced value is assigned to it directly — this
+ * type-checks because each declared signature's return type
+ * (`Effect.Effect<void, ..., ...>`) is a strict widening of what the
+ * (non-generic, `any`-erased-at-the-seam) runtime body actually returns,
+ * which is exactly what covariant Effect error/requirement channels allow.
  */
+const dispatchRunInPane = (
+  pane: Pane,
+  input: string | Stream.Stream<string, unknown, unknown>,
+): Effect.Effect<void, HerdrProtocolError | RpcClientError | unknown, HerdrSession | unknown> =>
+  Stream.isStream(input)
+    ? Effect.gen(function*() {
+      const session = yield* HerdrSession
+      yield* Stream.runForEach(input, (chunk) => session.rpc["pane.send_text"]({ pane_id: pane.id, text: chunk }))
+    })
+    : Effect.gen(function*() {
+      const session = yield* HerdrSession
+      yield* session.rpc["pane.send_text"]({ pane_id: pane.id, text: input + "\n" })
+    })
+
 export const runInPane: {
   (pane: Pane, text: string): Effect.Effect<void, HerdrProtocolError | RpcClientError, HerdrSession>
   (text: string): (pane: Pane) => Effect.Effect<void, HerdrProtocolError | RpcClientError, HerdrSession>
+  <E, R>(
+    pane: Pane,
+    chunks: Stream.Stream<string, E, R>,
+  ): Effect.Effect<void, HerdrProtocolError | RpcClientError | E, HerdrSession | R>
+  <E, R>(
+    chunks: Stream.Stream<string, E, R>,
+  ): (pane: Pane) => Effect.Effect<void, HerdrProtocolError | RpcClientError | E, HerdrSession | R>
 } = Function.dual(
   (args) => isPaneArg(args[0]),
-  (pane: Pane, text: string) =>
-    Effect.gen(function*() {
-      const session = yield* HerdrSession
-      yield* session.rpc["pane.send_text"]({ pane_id: pane.id, text: text + "\n" })
-    }),
+  dispatchRunInPane,
 )
 
 /**
