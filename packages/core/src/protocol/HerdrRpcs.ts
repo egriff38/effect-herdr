@@ -304,6 +304,17 @@ export const HerdrRpcs = RpcGroup.make(
     error: HerdrProtocolError,
   }),
   /**
+   * `pane.close` — close/destroy a pane. Params `{pane_id}`; success reply
+   * is a bare `OkResult` (`{"type":"ok"}`) per `scripts/herdr-schema.json`'s
+   * `PaneTarget`/`OkResult`. herdr's built-in `pane.close` handles tab and
+   * workspace collapse if the pane was the last child.
+   */
+  Rpc.make("pane.close", {
+    payload: { pane_id: Schema.String },
+    success: OkResult,
+    error: HerdrProtocolError,
+  }),
+  /**
    * `pane.read` — added as a byproduct of issue #6's E2E verification (no
    * ergonomic SDK combinator wraps this yet; slice 6's `waitForOutput`,
    * issue #7, is the first to need read-adjacent access as a first-class

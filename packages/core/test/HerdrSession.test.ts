@@ -33,12 +33,16 @@ const fakeConnectionLayer = (handlers: {
             "pane.focus": () => Effect.die("pane.focus not stubbed"),
             "session.snapshot": () => Effect.die("session.snapshot not stubbed"),
             "pane.send_text": () => Effect.die("pane.send_text not stubbed"),
+            "pane.close": () => Effect.die("pane.close not stubbed"),
             "pane.read": () => Effect.die("pane.read not stubbed"),
             "pane.wait_for_output": () => Effect.die("pane.wait_for_output not stubbed"),
           }),
         ),
       )
-      return Layer.succeed(HerdrConnection, { rpc })
+      return Layer.succeed(HerdrConnection, {
+        rpc,
+        subscribeEvents: () => Effect.die("subscribeEvents not stubbed"),
+      })
     }),
   )
 

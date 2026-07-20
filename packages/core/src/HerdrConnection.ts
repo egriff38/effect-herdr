@@ -20,23 +20,41 @@
  * the reconnect-per-call cost is hidden behind this module, not exposed.
  */
 
-import { Context, Effect, Layer, Scope } from "effect"
+import { Context, Effect, Exit, Layer, Scope } from "effect"
 import { RpcClient, RpcClientError, RpcGroup } from "effect/unstable/rpc"
+import type * as Stream from "effect/Stream"
 import { HerdrSocketPathConfig, socketFileExists } from "./config.js"
+import * as HerdrEventsSocket from "./HerdrEventsSocket.js"
+import type { HerdrEventPush, HerdrSubscribeAckError, HerdrSubscribePushError } from "./HerdrEventsSocket.js"
 import { makeHerdrProtocol } from "./HerdrWireProtocol.js"
 import { ConnectionRefused, SocketFileMissing, TransportOpenFailed } from "./protocol/errors.js"
 import { HerdrRpcs } from "./protocol/HerdrRpcs.js"
 
 export interface HerdrConnectionShape {
   readonly rpc: RpcClient.RpcClient<RpcGroup.Rpcs<typeof HerdrRpcs>, RpcClientError.RpcClientError>
+  /**
+   * Subscribe to herdr's `events.subscribe` push stream, filtered
+   * server-side to `types` (dotted form, e.g. `"pane.focused"`). Scoped:
+   * the underlying persistent socket (`HerdrEventsSocket.subscribe`) stays
+   * open, and the returned Stream keeps emitting, for as long as the
+   * calling `Scope` does.
+   *
+   * Deliberately NOT a connection-wide `disconnects` signal (that design
+   * was dropped — see issue #10's revision history) and not memoized per
+   * `HerdrConnection` — every call opens its OWN independent subscribe
+   * connection, matching herdr's per-subscription wire model (verified
+   * live: one `events.subscribe` request per connection, not a
+   * multiplexed fan-out of one shared subscription).
+   */
+  readonly subscribeEvents: (
+    types: ReadonlyArray<string>,
+  ) => Effect.Effect<Stream.Stream<HerdrEventPush, HerdrSubscribePushError>, HerdrSubscribeAckError, Scope.Scope>
 }
 
 /**
- * `Context.Service` tag. Deliberately minimal — just the typed client.
- * `disconnects` (connection-scoped events) is a slice-9 addition (issue #10);
- * it does not exist as a placeholder field here because a field that is
- * always `Stream.empty` would misrepresent a real capability as already
- * implemented. Slice 9 adds it as new surface, not a filled-in stub.
+ * `Context.Service` tag. Two capabilities: the typed `rpc` client (D4 —
+ * per-call dial, transparent to callers) and `subscribeEvents` (issue #10/
+ * slice 9 — herdr's one persistent-connection exception, `events.subscribe`).
  *
  * No default implementation — a program that never provides `make`/`layer`/
  * `Live` fails at runtime with a "service not found" defect, which is the
@@ -71,6 +89,19 @@ const verifyLive = (
  * prove liveness — before returning, per D3's "fail loud at Layer-build
  * time" requirement. No upfront persistent socket is opened (D4): each RPC
  * call, including this `ping`, dials its own connection internally.
+ *
+ * `subscribeEvents` (issue #10/slice 9) closes over this call's own
+ * `Scope.Scope` (captured once via `Effect.scope`, below) to satisfy the
+ * "connection-scope teardown" requirement: every `subscribeEvents` call
+ * forks a fresh CHILD scope of the connection's own scope for its
+ * persistent socket + read loop (`Scope.fork` — closing the connection's
+ * scope closes every such child automatically, per `Scope.fork`'s own
+ * parent/child finalizer wiring), and additionally registers the
+ * INDIVIDUAL caller's scope (via `Effect.scope` inside `subscribeEvents`
+ * itself — the `Scope.Scope` its own signature requires) to close that
+ * same child scope too. So either the connection's scope or the specific
+ * caller's scope closing tears the subscription down — whichever comes
+ * first.
  */
 export const make = (
   options: { readonly socketPath: string },
@@ -89,7 +120,17 @@ export const make = (
 
     yield* verifyLive(rpc, socketPath)
 
-    return { rpc }
+    const connectionScope = yield* Effect.scope
+
+    const subscribeEvents: HerdrConnectionShape["subscribeEvents"] = (types) =>
+      Effect.gen(function*() {
+        const childScope = yield* Scope.fork(connectionScope)
+        const callerScope = yield* Effect.scope
+        yield* Scope.addFinalizer(callerScope, Scope.close(childScope, Exit.void))
+        return yield* HerdrEventsSocket.subscribe(socketPath, types).pipe(Scope.provide(childScope))
+      })
+
+    return { rpc, subscribeEvents }
   })
 
 /**

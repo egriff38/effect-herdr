@@ -293,3 +293,14 @@ export const waitForOutput: {
       }),
     ),
 )
+
+/**
+ * Close a pane. Wraps `pane.close` — herdr handles collapsing the parent
+ * tab/workspace if this was the last pane. Returns `void` on success
+ * (herdr's own reply is a bare `{"type":"ok"}` ack with no payload).
+ */
+export const closePane = (pane: Pane): Effect.Effect<void, HerdrProtocolError | RpcClientError, HerdrSession> =>
+  Effect.gen(function*() {
+    const session = yield* HerdrSession
+    yield* session.rpc["pane.close"]({ pane_id: pane.id })
+  })

@@ -27,8 +27,10 @@
  * not `tab.get`.
  */
 
-import { DateTime, Effect, Option } from "effect"
+import { DateTime, Effect, Option, Scope, Stream, SubscriptionRef } from "effect"
 import type { RpcClientError } from "effect/unstable/rpc/RpcClientError"
+import { HerdrConnection } from "../HerdrConnection.js"
+import type { HerdrEventPush, HerdrSubscribeAckError } from "../HerdrEventsSocket.js"
 import { HerdrSession } from "../HerdrSession.js"
 import { HerdrProtocolError } from "../protocol/errors.js"
 import type { TabInfoWire, WorkspaceInfoWire } from "../protocol/HerdrRpcs.js"
@@ -180,17 +182,78 @@ export const focusedWorkspace: Effect.Effect<
 })
 
 /**
- * Live-updating view of the globally focused pane. Read-only from the
- * caller's POV — `SubscriptionRef` exposes `.get` and `.changes`, not
- * `.set`. To change focus, call `focusPane(pane)` and the ref updates on
- * herdr's next broadcast.
- *
- * Scoped: the underlying events.subscribe stream lives while the caller's
- * scope does.
+ * Read-only surface `focusedPaneRef` hands back — `.get`/`.changes`, never
+ * `.set`. A real `SubscriptionRef` already has exactly these two functions
+ * as free functions over `self` (see `SubscriptionRef.get`/`.changes`), so
+ * this interface isn't a runtime wrapper for safety — it's what stops this
+ * module's own return statement from accidentally leaking the writable
+ * `SubscriptionRef` itself. Nothing in this module calls
+ * `SubscriptionRef.set` on the caller's behalf; only this file's own
+ * background loop does.
  */
-export declare const focusedPaneRef: unknown /* Effect.Effect<
-  SubscriptionRef.SubscriptionRef<Option.Option<PaneSnapshot>>,
-  HerdrProtocolError,
-  HerdrSession | Scope.Scope
-> */
+export interface FocusedPaneRef {
+  readonly get: Effect.Effect<Option.Option<PaneSnapshot>>
+  readonly changes: Stream.Stream<Option.Option<PaneSnapshot>>
+}
+
+/**
+ * Live-updating view of the globally focused pane. Read-only from the
+ * caller's POV (see `FocusedPaneRef` above) — to change focus, call
+ * `focusPane(pane)` (already implemented in `pane.ts`) and this ref updates
+ * itself on herdr's next `pane_focused` broadcast.
+ *
+ * Initial value: this file's own `focusedPane` combinator (a real
+ * `session.snapshot` round-trip — never a placeholder `Option.none()`).
+ * Live updates: `connection.subscribeEvents(["pane.focused"])`, filtered to
+ * `event === "pane_focused"` pushes (underscore form — the wire's push-side
+ * form, NOT the dotted subscription-request form used above), each
+ * resolved to a fresh `PaneSnapshot` via `snapshotPane`.
+ *
+ * Scoping (issue #10/slice 9's "connection-scope teardown" requirement):
+ * `connection.subscribeEvents` itself already forks its persistent socket
+ * into a scope that is BOTH a child of the connection's own scope AND torn
+ * down by this call's own ambient scope (see `HerdrConnection.ts`'s
+ * `subscribeEvents` implementation) — so the push stream this function
+ * consumes already ends when either scope closes, with no extra wiring
+ * needed here. The loop that consumes it and calls `SubscriptionRef.set`
+ * is forked into the ordinary ambient scope via `Effect.forkScoped`
+ * (matching `HerdrWireProtocol.ts`'s own idiom for its background read
+ * loop) — once the push stream ends (for either of the reasons above), the
+ * loop's `Stream.runForEach` completes and the fiber exits on its own; a
+ * failure on that stream (e.g. the daemon dying) similarly ends the loop,
+ * it just isn't surfaced back to a caller who already received the ref.
+ *
+ * A `snapshotPane` lookup that fails for one particular push (e.g. the
+ * newly-focused pane was already closed by the time this resolves it) is
+ * swallowed rather than clobbering the ref with a guess — the ref keeps its
+ * last known-good value and simply skips that one update.
+ */
+export const focusedPaneRef: Effect.Effect<
+  FocusedPaneRef,
+  HerdrProtocolError | RpcClientError | HerdrSubscribeAckError,
+  HerdrSession | HerdrConnection | Scope.Scope
+> = Effect.gen(function*() {
+  const connection = yield* HerdrConnection
+  const initial = yield* focusedPane
+  const ref = yield* SubscriptionRef.make(initial)
+
+  const pushes = yield* connection.subscribeEvents(["pane.focused"])
+
+  const focusedPaneIds = pushes.pipe(
+    Stream.filter((push): push is HerdrEventPush & { readonly data: { readonly pane_id: string } } =>
+      push.event === "pane_focused" && typeof push.data["pane_id"] === "string"),
+    Stream.map((push) => push.data.pane_id as PaneId),
+  )
+
+  yield* Stream.runForEach(focusedPaneIds, (paneId) =>
+    snapshotPane({ id: paneId }).pipe(
+      Effect.flatMap((snapshot) => SubscriptionRef.set(ref, Option.some(snapshot))),
+      Effect.ignore,
+    )).pipe(Effect.forkScoped)
+
+  return {
+    get: SubscriptionRef.get(ref),
+    changes: SubscriptionRef.changes(ref),
+  }
+})
 

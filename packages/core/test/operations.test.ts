@@ -45,6 +45,7 @@ type Handlers = {
   readonly "pane.send_text"?: (
     p: { readonly pane_id: string; readonly text: string },
   ) => Effect.Effect<OkResult, HerdrProtocolError>
+  readonly "pane.close"?: (p: { readonly pane_id: string }) => Effect.Effect<OkResult, HerdrProtocolError>
   readonly "pane.read"?: (p: {
     readonly pane_id: string
     readonly source: "visible" | "recent" | "recent_unwrapped" | "detection"
@@ -73,13 +74,17 @@ const fakeConnectionLayer = (handlers: Handlers) =>
             "pane.focus": handlers["pane.focus"] ?? (() => Effect.die("pane.focus not stubbed")),
             "session.snapshot": handlers["session.snapshot"] ?? (() => Effect.die("session.snapshot not stubbed")),
             "pane.send_text": handlers["pane.send_text"] ?? (() => Effect.die("pane.send_text not stubbed")),
+            "pane.close": handlers["pane.close"] ?? (() => Effect.die("pane.close not stubbed")),
             "pane.read": handlers["pane.read"] ?? (() => Effect.die("pane.read not stubbed")),
             "pane.wait_for_output": handlers["pane.wait_for_output"]
               ?? (() => Effect.die("pane.wait_for_output not stubbed")),
           }),
         ),
       )
-      return Layer.succeed(HerdrConnection, { rpc })
+      return Layer.succeed(HerdrConnection, {
+        rpc,
+        subscribeEvents: () => Effect.die("subscribeEvents not stubbed"),
+      })
     }),
   )
 
