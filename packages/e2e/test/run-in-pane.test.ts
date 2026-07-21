@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { runTest, runTestExit } from "./testRuntime.js"
 import { Effect } from "effect"
 import { HerdrConnection, HerdrSession } from "effect-herdr"
 import { runInPane } from "effect-herdr"
@@ -22,8 +23,7 @@ import { acquire, createWorkspaceFixture } from "../src/HerdrTestServer.js"
  */
 describe("Slice 5 E2E — runInPane", () => {
   test("runInPane(pane, text) types the command and submits it — visible in pane.read", async () => {
-    await Effect.runPromise(
-      Effect.scoped(
+    await runTest(
         Effect.gen(function*() {
           const server = yield* acquire
           const connection = yield* HerdrConnection.make({ socketPath: server.socketPath })
@@ -50,13 +50,11 @@ describe("Slice 5 E2E — runInPane", () => {
           )
           expect(read.read.text).toContain("run-in-pane-e2e-marker")
         }),
-      ),
-    )
+      )
   }, 20_000)
 
   test("runInPane data-last (pane.pipe(runInPane(text))) also submits the command", async () => {
-    await Effect.runPromise(
-      Effect.scoped(
+    await runTest(
         Effect.gen(function*() {
           const server = yield* acquire
           const connection = yield* HerdrConnection.make({ socketPath: server.socketPath })
@@ -86,7 +84,6 @@ describe("Slice 5 E2E — runInPane", () => {
           )
           expect(read.read.text).toContain("data-last-marker")
         }),
-      ),
-    )
+      )
   }, 20_000)
 })

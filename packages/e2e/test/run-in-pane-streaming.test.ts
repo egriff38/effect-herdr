@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { runTest, runTestExit } from "./testRuntime.js"
 import { Effect, Stream } from "effect"
 import { HerdrConnection, HerdrSession } from "effect-herdr"
 import { runInPane, waitForOutput } from "effect-herdr"
@@ -15,8 +16,7 @@ import { acquire, createWorkspaceFixture } from "../src/HerdrTestServer.js"
  */
 describe("Slice 7 E2E — runInPane streaming", () => {
   test("streaming with a trailing-newline chunk submits the concatenated text — visible via waitForOutput", async () => {
-    await Effect.runPromise(
-      Effect.scoped(
+    await runTest(
         Effect.gen(function*() {
           const server = yield* acquire
           const connection = yield* HerdrConnection.make({ socketPath: server.socketPath })
@@ -43,13 +43,11 @@ describe("Slice 7 E2E — runInPane streaming", () => {
           expect(chunks).toHaveLength(1)
           expect(Array.from(chunks)[0]).toContain("hello world")
         }),
-      ),
-    )
+      )
   }, 20_000)
 
   test("streaming without a trailing newline leaves the text typed but unsubmitted — visible via a raw pane.read, no shell execution", async () => {
-    await Effect.runPromise(
-      Effect.scoped(
+    await runTest(
         Effect.gen(function*() {
           const server = yield* acquire
           const connection = yield* HerdrConnection.make({ socketPath: server.socketPath })
@@ -85,7 +83,6 @@ describe("Slice 7 E2E — runInPane streaming", () => {
           // produces no new output to match against.
           expect(read.read.text).toContain("no-newline-here")
         }),
-      ),
-    )
+      )
   }, 20_000)
 })

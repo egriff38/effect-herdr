@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { runTest, runTestExit } from "./testRuntime.js"
 import { Effect, Option } from "effect"
 import { HerdrConnection, HerdrSession, listWorkspaces } from "effect-herdr"
 import { acquire } from "../src/HerdrTestServer.js"
@@ -10,8 +11,7 @@ import { acquire } from "../src/HerdrTestServer.js"
  */
 describe("HerdrSession E2E — listWorkspaces", () => {
   test("program.pipe(Effect.provide(HerdrSession.layer)) works end-to-end", async () => {
-    await Effect.runPromise(
-      Effect.scoped(
+    await runTest(
         Effect.gen(function*() {
           const server = yield* acquire
           const connection = yield* HerdrConnection.make({ socketPath: server.socketPath })
@@ -24,8 +24,7 @@ describe("HerdrSession E2E — listWorkspaces", () => {
           expect(result.type).toBe("workspace_list")
           expect(Array.isArray(result.workspaces)).toBe(true)
         }),
-      ),
-    )
+      )
   }, 20_000)
 
   test("HerdrSession.currentIds resolution is consistent with the process's actual HERDR_* env state", async () => {
@@ -38,8 +37,7 @@ describe("HerdrSession E2E — listWorkspaces", () => {
     // ambient state can't leak in. This E2E test instead verifies the two
     // resolutions agree with each other: resolving currentIds twice through
     // separate sessions in the same ambient environment must be consistent.
-    await Effect.runPromise(
-      Effect.scoped(
+    await runTest(
         Effect.gen(function*() {
           const server = yield* acquire
           const connection = yield* HerdrConnection.make({ socketPath: server.socketPath })
@@ -55,7 +53,6 @@ describe("HerdrSession E2E — listWorkspaces", () => {
             expect(first.currentIds.value).toEqual(second.currentIds.value)
           }
         }),
-      ),
-    )
+      )
   }, 20_000)
 })

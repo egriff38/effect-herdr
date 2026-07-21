@@ -21,6 +21,7 @@
  */
 
 import { Context, Effect, Exit, Layer, Scope } from "effect"
+import type { FileSystem } from "effect/FileSystem"
 import { RpcClient, RpcClientError, RpcGroup } from "effect/unstable/rpc"
 import type * as Stream from "effect/Stream"
 import { HerdrSocketPathConfig, socketFileExists } from "./config.js"
@@ -105,11 +106,18 @@ const verifyLive = (
  */
 export const make = (
   options: { readonly socketPath: string },
-): Effect.Effect<HerdrConnectionShape, SocketFileMissing | ConnectionRefused | TransportOpenFailed, Scope.Scope> =>
+): Effect.Effect<
+  HerdrConnectionShape,
+  SocketFileMissing | ConnectionRefused | TransportOpenFailed,
+  Scope.Scope | FileSystem
+> =>
   Effect.gen(function*() {
     const { socketPath } = options
 
-    if (!socketFileExists(socketPath)) {
+    const exists = yield* socketFileExists(socketPath).pipe(
+      Effect.mapError((cause) => new TransportOpenFailed({ socketPath, cause })),
+    )
+    if (!exists) {
       return yield* new SocketFileMissing({ socketPath })
     }
 
@@ -139,7 +147,7 @@ export const make = (
  */
 export const layer = (
   options: { readonly socketPath: string },
-): Layer.Layer<HerdrConnection, SocketFileMissing | ConnectionRefused | TransportOpenFailed> =>
+): Layer.Layer<HerdrConnection, SocketFileMissing | ConnectionRefused | TransportOpenFailed, FileSystem> =>
   Layer.effect(HerdrConnection, make(options))
 
 /**
@@ -147,7 +155,7 @@ export const layer = (
  * `HERDR_SOCKET_PATH` then `~/.config/herdr/herdr.sock`. Fails at
  * Layer-build time if the resolved path has no live server.
  */
-export const Live: Layer.Layer<HerdrConnection, SocketFileMissing | ConnectionRefused | TransportOpenFailed> = Layer
+export const Live: Layer.Layer<HerdrConnection, SocketFileMissing | ConnectionRefused | TransportOpenFailed, FileSystem> = Layer
   .unwrap(
     Effect.gen(function*() {
       const socketPath = yield* HerdrSocketPathConfig

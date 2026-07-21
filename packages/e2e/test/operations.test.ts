@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { runTest, runTestExit } from "./testRuntime.js"
 import { Effect, Option } from "effect"
 import { HerdrConnection, HerdrSession } from "effect-herdr"
 import { currentPane, currentTab, currentWorkspace, listPanes, snapshotPane } from "effect-herdr"
@@ -15,8 +16,7 @@ import { acquire, createWorkspaceFixture } from "../src/HerdrTestServer.js"
  */
 describe("Slice 3 E2E — snapshotPane, listPanes, current*", () => {
   test("snapshotPane and listPanes round-trip through a real herdr server", async () => {
-    await Effect.runPromise(
-      Effect.scoped(
+    await runTest(
         Effect.gen(function*() {
           const server = yield* acquire
           const connection = yield* HerdrConnection.make({ socketPath: server.socketPath })
@@ -37,8 +37,7 @@ describe("Slice 3 E2E — snapshotPane, listPanes, current*", () => {
           expect(panes).toHaveLength(1)
           expect(panes[0]?.id).toBe(fixture.paneId as PaneId)
         }),
-      ),
-    )
+      )
   }, 20_000)
 
   test("current* resolve real snapshots when HERDR_* env vars point at the fixture", async () => {
@@ -49,8 +48,7 @@ describe("Slice 3 E2E — snapshotPane, listPanes, current*", () => {
     }
 
     try {
-      await Effect.runPromise(
-        Effect.scoped(
+      await runTest(
           Effect.gen(function*() {
             const server = yield* acquire
             const connection = yield* HerdrConnection.make({ socketPath: server.socketPath })
@@ -75,8 +73,7 @@ describe("Slice 3 E2E — snapshotPane, listPanes, current*", () => {
             expect(Option.isSome(workspace)).toBe(true)
             if (Option.isSome(workspace)) expect(workspace.value.id).toBe(fixture.workspaceId as never)
           }),
-        ),
-      )
+        )
     } finally {
       for (const [key, value] of [
         ["HERDR_WORKSPACE_ID", prev.workspaceId],
@@ -90,7 +87,7 @@ describe("Slice 3 E2E — snapshotPane, listPanes, current*", () => {
   }, 20_000)
 
   test("snapshotPane fails with pane_not_found for a nonexistent pane", async () => {
-    const result = await Effect.runPromiseExit(
+    const result = await runTestExit(
       Effect.scoped(
         Effect.gen(function*() {
           const server = yield* acquire
@@ -98,7 +95,7 @@ describe("Slice 3 E2E — snapshotPane, listPanes, current*", () => {
           return yield* snapshotPane({ id: "wZZZZZ:pZZZZZ" as PaneId }).pipe(
             Effect.provide(HerdrSession.layer),
             Effect.provideService(HerdrConnection.HerdrConnection, connection),
-          )
+    )
         }),
       ),
     )

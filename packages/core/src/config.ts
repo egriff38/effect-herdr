@@ -1,34 +1,37 @@
 /**
- * Configuration for effect-herdr, held as Context.References so callers can
- * override any of them internally (@187):
+ * Configuration for effect-herdr, held as `Context.Reference`s so callers can
+ * override any of them (@187):
  *
  *   program.pipe(
- *     Effect.provideServiceEffect(HerdrSocketPathConfig, resolveNamed("foo")),
+ *     Effect.provideServiceEffect(HerdrSocketPathConfig, resolveNamedSessionSocketPath("foo")),
  *     Effect.provide(HerdrSession.Live),
  *   )
  */
 
 import { Context, Effect } from "effect"
-import { existsSync } from "node:fs"
-import { homedir } from "node:os"
-import { join } from "node:path"
+import { FileSystem } from "effect/FileSystem"
 
 /**
  * Two-tier default resolution (D3):
- *   1. HERDR_SOCKET_PATH env var, if set.
+ *   1. `HERDR_SOCKET_PATH` env var, if set.
  *   2. `~/.config/herdr/herdr.sock` — the default session's socket, matching
  *      what bare `herdr` itself resolves to.
  *
  * This does NOT check whether the resolved path actually has a live server —
- * that check happens at `HerdrConnection.make`/`.Live` acquire time, not here.
- * This function only computes *which* path to try.
+ * that check happens at `HerdrConnection.make`/`.Live` acquire time, not
+ * here. This function only computes *which* path to try.
+ *
+ * `HOME` is read directly rather than through a platform `Path`/`homedir`
+ * primitive: herdr's socket is a unix-domain socket, so its path is always
+ * POSIX-shaped, independent of the host's own path-separator conventions.
  */
 export const resolveDefaultSocketPath = (): string => {
   const fromEnv = process.env["HERDR_SOCKET_PATH"]
   if (fromEnv !== undefined && fromEnv.length > 0) {
     return fromEnv
   }
-  return join(homedir(), ".config", "herdr", "herdr.sock")
+  const home = process.env["HOME"] ?? "/root"
+  return `${home}/.config/herdr/herdr.sock`
 }
 
 /**
@@ -44,15 +47,15 @@ export class HerdrSocketPathConfig extends Context.Reference<string>(
 /**
  * Resolve a NAMED session's socket path (not the default-session path).
  * Used by callers who want a specific session rather than the sound-defaults
- * path — e.g. `Effect.provideServiceEffect(HerdrSocketPathConfig, resolveNamedSessionSocketPath("effect-herdr-test-xyz"))`.
+ * path — e.g. `Effect.provideServiceEffect(HerdrSocketPathConfig, resolveNamedSessionSocketPath("my-session"))`.
  *
- * This does filesystem path arithmetic only — it does not enumerate
- * `herdr session list`, and it does not check liveness. Per D3, the
- * sound-defaults path never does filesystem discovery; this helper is
- * explicit opt-in for named-session callers (case B).
+ * This does path arithmetic only — it does not enumerate `herdr session
+ * list`, and it does not check liveness. Per D3, the sound-defaults path
+ * never does filesystem discovery; this helper is explicit opt-in for
+ * named-session callers (case B).
  */
 export const resolveNamedSessionSocketPath = (sessionName: string): Effect.Effect<string> =>
-  Effect.sync(() => join(homedir(), ".config", "herdr", "sessions", sessionName, "herdr.sock"))
+  Effect.sync(() => `${process.env["HOME"] ?? "/root"}/.config/herdr/sessions/${sessionName}/herdr.sock`)
 
 /**
  * Whether the SDK should re-attempt a broken connection (via a
@@ -68,5 +71,14 @@ export class HerdrReconnectPolicy extends Context.Reference<HerdrReconnectPolicy
   { defaultValue: (): HerdrReconnectPolicyValue => "never" },
 ) {}
 
-/** @internal exported for HerdrConnection's own existsSync-based fast check. */
-export const socketFileExists = (path: string): boolean => existsSync(path)
+/**
+ * Whether a herdr socket file exists at `path`. Backed by the `FileSystem`
+ * service — callers provide whichever platform layer matches their runtime
+ * (`BunFileSystem.layer`, `NodeFileSystem.layer`, ...). effect-herdr bundles
+ * none of its own; `HerdrConnection.Live`/`.layer`/`.make` all require
+ * `FileSystem` in their own signatures as a result.
+ *
+ * @internal exported for `HerdrConnection.make`'s own liveness pre-check.
+ */
+export const socketFileExists = (path: string) =>
+  Effect.flatMap(FileSystem, (fs) => fs.exists(path))

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { runTest, runTestExit } from "./testRuntime.js"
 import { Effect } from "effect"
 import { HerdrConnection, HerdrSession } from "effect-herdr"
 import { focusPane, listPanes, snapshotPane, splitPane } from "effect-herdr"
@@ -11,8 +12,7 @@ import { acquire, createWorkspaceFixture } from "../src/HerdrTestServer.js"
  */
 describe("Slice 4 E2E — splitPane, focusPane", () => {
   test("splitPane creates a distinct new pane and listPanes reflects it", async () => {
-    await Effect.runPromise(
-      Effect.scoped(
+    await runTest(
         Effect.gen(function*() {
           const server = yield* acquire
           const connection = yield* HerdrConnection.make({ socketPath: server.socketPath })
@@ -35,13 +35,11 @@ describe("Slice 4 E2E — splitPane, focusPane", () => {
           const panes = yield* listPanes({ id: fixture.workspaceId as WorkspaceId }).pipe(withSession, withConnection)
           expect(panes).toHaveLength(2)
         }),
-      ),
-    )
+      )
   }, 20_000)
 
   test("focusPane focuses the new pane and unfocuses the original", async () => {
-    await Effect.runPromise(
-      Effect.scoped(
+    await runTest(
         Effect.gen(function*() {
           const server = yield* acquire
           const connection = yield* HerdrConnection.make({ socketPath: server.socketPath })
@@ -65,7 +63,6 @@ describe("Slice 4 E2E — splitPane, focusPane", () => {
           const originalSnapshot = yield* snapshotPane(original).pipe(withSession, withConnection)
           expect(originalSnapshot.focused).toBe(false)
         }),
-      ),
-    )
+      )
   }, 20_000)
 })

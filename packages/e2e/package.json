@@ -8,7 +8,8 @@
     "test": "bun test"
   },
   "dependencies": {
-    "effect-herdr": "workspace:*"
+    "effect-herdr": "workspace:*",
+    "@effect/platform-bun": "4.0.0-beta.74"
   },
   "peerDependencies": {
     "effect": "4.0.0-beta.74"

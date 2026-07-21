@@ -9,6 +9,7 @@
  */
 
 import { Context, Effect, Layer, Option } from "effect"
+import type { FileSystem } from "effect/FileSystem"
 import { HerdrConnection, Live as HerdrConnectionLive } from "./HerdrConnection.js"
 import type { HerdrConnectionShape } from "./HerdrConnection.js"
 import type { HerdrConnectError } from "./protocol/errors.js"
@@ -74,4 +75,4 @@ export const layer: Layer.Layer<HerdrSession, never, HerdrConnection> = Layer.ef
  *     Effect.runPromise,
  *   )
  */
-export const Live: Layer.Layer<HerdrSession, HerdrConnectError> = Layer.provide(layer, HerdrConnectionLive)
+export const Live: Layer.Layer<HerdrSession, HerdrConnectError, FileSystem> = Layer.provide(layer, HerdrConnectionLive)

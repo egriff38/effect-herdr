@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { runTest, runTestExit } from "./testRuntime.js"
 import { Effect, Option } from "effect"
 import { HerdrConnection, HerdrSession } from "effect-herdr"
 import { activePane, focusedPane } from "effect-herdr"
@@ -16,8 +17,7 @@ import { acquire, createWorkspaceFixture } from "../src/HerdrTestServer.js"
  */
 describe("Slice 8 E2E — activePane, focusedPane", () => {
   test("activePane(workspace) returns the pane focused via focusPane", async () => {
-    await Effect.runPromise(
-      Effect.scoped(
+    await runTest(
         Effect.gen(function*() {
           const server = yield* acquire
           const connection = yield* HerdrConnection.make({ socketPath: server.socketPath })
@@ -41,13 +41,11 @@ describe("Slice 8 E2E — activePane, focusedPane", () => {
           expect(active.id).toBe(newPane.id)
           expect(active.focused).toBe(true)
         }),
-      ),
-    )
+      )
   }, 20_000)
 
   test("activePane(tab) returns the pane focused via focusPane, drilled through session.snapshot's layouts", async () => {
-    await Effect.runPromise(
-      Effect.scoped(
+    await runTest(
         Effect.gen(function*() {
           const server = yield* acquire
           const connection = yield* HerdrConnection.make({ socketPath: server.socketPath })
@@ -69,13 +67,11 @@ describe("Slice 8 E2E — activePane, focusedPane", () => {
           expect(active.id).toBe(newPane.id)
           expect(active.focused).toBe(true)
         }),
-      ),
-    )
+      )
   }, 20_000)
 
   test("focusedPane returns Option.some(the pane) after focusPane, Option.none is never observed once a pane exists", async () => {
-    await Effect.runPromise(
-      Effect.scoped(
+    await runTest(
         Effect.gen(function*() {
           const server = yield* acquire
           const connection = yield* HerdrConnection.make({ socketPath: server.socketPath })
@@ -105,7 +101,6 @@ describe("Slice 8 E2E — activePane, focusedPane", () => {
           expect(Option.isSome(afterRefocus)).toBe(true)
           if (Option.isSome(afterRefocus)) expect(afterRefocus.value.id).toBe(original.id)
         }),
-      ),
-    )
+      )
   }, 20_000)
 })

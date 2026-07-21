@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { runTest, runTestExit } from "./testRuntime.js"
 import { Effect } from "effect"
 import { HerdrConnection } from "effect-herdr"
 import { acquire } from "../src/HerdrTestServer.js"
@@ -16,8 +17,7 @@ import { acquire } from "../src/HerdrTestServer.js"
  */
 describe("HerdrConnection E2E — workspace.list", () => {
   test("connects to a real herdr server and lists workspaces (a fresh headless session starts empty)", async () => {
-    await Effect.runPromise(
-      Effect.scoped(
+    await runTest(
         Effect.gen(function*() {
           const server = yield* acquire
           const conn = yield* HerdrConnection.make({ socketPath: server.socketPath })
@@ -39,12 +39,11 @@ describe("HerdrConnection E2E — workspace.list", () => {
           const pong = yield* conn.rpc.ping()
           expect(pong.type).toBe("pong")
         }),
-      ),
-    )
+      )
   }, 20_000)
 
   test("fails with SocketFileMissing when the socket path has no server", async () => {
-    const exit = await Effect.runPromiseExit(
+    const exit = await runTestExit(
       Effect.scoped(HerdrConnection.make({ socketPath: "/tmp/effect-herdr-e2e-nonexistent.sock" })),
     )
 

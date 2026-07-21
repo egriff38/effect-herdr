@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { runTest, runTestExit } from "./testRuntime.js"
 import { Effect, Stream } from "effect"
 import { HerdrConnection, HerdrSession } from "effect-herdr"
 import { WaitError, waitForOutput } from "effect-herdr"
@@ -20,8 +21,7 @@ import { acquire, createWorkspaceFixture } from "../src/HerdrTestServer.js"
  */
 describe("Slice 6 E2E — waitForOutput", () => {
   test("waitForOutput matches runInPane's echoed command and terminates cleanly", async () => {
-    await Effect.runPromise(
-      Effect.scoped(
+    await runTest(
         Effect.gen(function*() {
           const server = yield* acquire
           const connection = yield* HerdrConnection.make({ socketPath: server.socketPath })
@@ -48,13 +48,11 @@ describe("Slice 6 E2E — waitForOutput", () => {
           expect(chunks).toHaveLength(1)
           expect(Array.from(chunks)[0]).toContain("ready")
         }),
-      ),
-    )
+      )
   }, 20_000)
 
   test("waitForOutput regex mode matches a numbered marker", async () => {
-    await Effect.runPromise(
-      Effect.scoped(
+    await runTest(
         Effect.gen(function*() {
           const server = yield* acquire
           const connection = yield* HerdrConnection.make({ socketPath: server.socketPath })
@@ -81,12 +79,11 @@ describe("Slice 6 E2E — waitForOutput", () => {
           expect(chunks).toHaveLength(1)
           expect(Array.from(chunks)[0]).toContain("READY-42")
         }),
-      ),
-    )
+      )
   }, 20_000)
 
   test("waitForOutput fails with WaitError({ reason: \"timeout\" }) when the match never appears", async () => {
-    const result = await Effect.runPromiseExit(
+    const result = await runTestExit(
       Effect.scoped(
         Effect.gen(function*() {
           const server = yield* acquire
@@ -108,7 +105,7 @@ describe("Slice 6 E2E — waitForOutput", () => {
             withConnection,
           )
         }),
-      ),
+    ),
     )
     expect(result._tag).toBe("Failure")
     if (result._tag === "Failure") {
