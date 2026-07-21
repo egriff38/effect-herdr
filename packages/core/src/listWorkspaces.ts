@@ -1,11 +1,22 @@
 /**
- * Trivial combinator proving `HerdrSession` works as a seam (@211-a).
- * Just dispatches `workspace.list` through `session.rpc`.
+ * Lists every workspace herdr currently knows about.
  *
- * Real domain-shaped operations (splitPane, runInPane, waitForOutput,
- * activePane, focusedPane, current*) land in later slices under
- * `operations/`. This module exists so slice 2 (issue #3) has a concrete,
- * testable proof that the service seam works end-to-end.
+ * **Example** (listing workspaces)
+ *
+ * ```ts
+ * import { Effect } from "effect"
+ * import { HerdrSession, listWorkspaces } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const { workspaces } = yield* listWorkspaces
+ *   return workspaces.map((workspace) => workspace.workspace_id)
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category combinators
+ * @since 0.1.0
  */
 
 import { Effect } from "effect"

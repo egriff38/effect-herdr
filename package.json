@@ -12,8 +12,8 @@
     "schema:refresh": "herdr api schema --json > scripts/herdr-schema.json && echo 'refreshed scripts/herdr-schema.json'"
   },
   "devDependencies": {
+    "@effect/platform-bun": "4.0.0-beta.74",
     "@types/bun": "latest",
-    "@types/node": "^25.9.3",
     "effect": "4.0.0-beta.74",
     "typescript": "^5.6.0"
   }

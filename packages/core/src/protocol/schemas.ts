@@ -1,33 +1,54 @@
 /**
  * Value objects for the herdr socket protocol.
  *
- * Split into IDENTITY types (small, stable, safe to pass around long-term)
- * and SNAPSHOT types (point-in-time captures of mutable state).
+ * Split into IDENTITY types (`Pane`/`Tab`/`Workspace` — small, stable,
+ * safe to hold onto long-term) and SNAPSHOT types (`PaneSnapshot`/
+ * `TabSnapshot`/`WorkspaceSnapshot` — point-in-time captures of mutable
+ * state such as `cwd`, `agent`, `agentStatus`, `focused`). Combinators in
+ * `operations/` return identity after a mutation and snapshots after a
+ * read — re-fetch a snapshot whenever you need fresh state.
  *
- * See design docs (D1-D3) and hunk review round 3 (@#4) for the rationale:
- * most fields herdr reports for a pane — cwd, agent, agentStatus, focused —
- * genuinely change during the pane's lifetime. Presenting them as `readonly`
- * fields on a single value object would misrepresent staleness.
- *
- * CORRECTION vs. the original sketch, found by checking herdr's real schema
- * (scripts/herdr-schema.json) during implementation of issue #4: `revision`
- * (herdr's own monotonic per-entity counter) exists ONLY on `PaneInfo` (and
- * `AgentInfo`, unrelated to this SDK's v1 surface). `TabInfo` and
- * `WorkspaceInfo` have no `revision` field at all. `PaneSnapshot` keeps
- * `revision`; `TabSnapshot`/`WorkspaceSnapshot` do not claim a field herdr
- * never sends.
+ * @since 0.1.0
  */
 import type { DateTime } from "effect"
 
-/** Branded string id types — opaque, safe to pass around, herdr never reuses closed ids. */
+/**
+ * Opaque branded id for a workspace. Safe to pass around; herdr never
+ * reuses a closed workspace's id.
+ *
+ * @category models
+ * @since 0.1.0
+ */
 export type WorkspaceId = string & { readonly _brand: "WorkspaceId" }
+
+/**
+ * Opaque branded id for a tab. Safe to pass around; herdr never reuses a
+ * closed tab's id.
+ *
+ * @category models
+ * @since 0.1.0
+ */
 export type TabId = string & { readonly _brand: "TabId" }
+
+/**
+ * Opaque branded id for a pane. Safe to pass around; herdr never reuses a
+ * closed pane's id.
+ *
+ * @category models
+ * @since 0.1.0
+ */
 export type PaneId = string & { readonly _brand: "PaneId" }
 
 // =============================================================================
-// Known-agent open list (@57)
+// Known-agent open list
 // =============================================================================
 
+/**
+ * Agent names herdr recognizes out of the box.
+ *
+ * @category models
+ * @since 0.1.0
+ */
 export type KnownAgent =
   | "claude"
   | "codex"
@@ -46,25 +67,70 @@ export type KnownAgent =
   | "hermes"
   | "mastracode"
 
+/**
+ * Any agent name herdr reports — {@link KnownAgent} plus an open tail for
+ * agents not yet enumerated.
+ *
+ * @category models
+ * @since 0.1.0
+ */
 export type Agent = KnownAgent | (string & {})
 
+/**
+ * The lifecycle state herdr tracks for a pane, tab, or workspace's agent.
+ *
+ * @category models
+ * @since 0.1.0
+ */
 export type AgentStatus = "idle" | "working" | "blocked" | "done" | "unknown"
 
 // =============================================================================
 // Identity types — stable references
 // =============================================================================
 
+/**
+ * A pane's stable identity: its own id plus the tab/workspace containing
+ * it. Combinators that mutate a pane (`splitPane`, `focusPane`) accept and
+ * return this — call `snapshotPane` for current state.
+ *
+ * **Example** (building a `Pane` from known ids)
+ *
+ * ```ts
+ * import type { Pane, PaneId, TabId, WorkspaceId } from "effect-herdr"
+ *
+ * const pane: Pane = {
+ *   id: "w1:t1:p1" as PaneId,
+ *   tabId: "w1:t1" as TabId,
+ *   workspaceId: "w1" as WorkspaceId,
+ * }
+ * ```
+ *
+ * @category models
+ * @since 0.1.0
+ */
 export interface Pane {
   readonly id: PaneId
   readonly tabId: TabId
   readonly workspaceId: WorkspaceId
 }
 
+/**
+ * A tab's stable identity: its own id plus the workspace containing it.
+ *
+ * @category models
+ * @since 0.1.0
+ */
 export interface Tab {
   readonly id: TabId
   readonly workspaceId: WorkspaceId
 }
 
+/**
+ * A workspace's stable identity.
+ *
+ * @category models
+ * @since 0.1.0
+ */
 export interface Workspace {
   readonly id: WorkspaceId
 }
@@ -74,15 +140,39 @@ export interface Workspace {
 // =============================================================================
 
 /**
- * `capturedAt` is common to every snapshot (SDK-side, from Effect's Clock —
- * diagnostics only, never a source of ordering truth). `revision` is NOT
- * common — only `PaneSnapshot` carries it, since only herdr's `PaneInfo`
- * wire shape has that field.
+ * The timestamp every snapshot type carries, stamped SDK-side (via
+ * Effect's `Clock`) at decode time — diagnostic only, never a source of
+ * ordering truth against herdr's own `revision` counters.
+ *
+ * @category models
+ * @since 0.1.0
  */
 export interface SnapshotCaptured {
   readonly capturedAt: DateTime.Utc
 }
 
+/**
+ * A pane's state as of `capturedAt`. Returned by `snapshotPane`,
+ * `listPanes`, and `currentPane`.
+ *
+ * **Example** (reading a pane's cwd)
+ *
+ * ```ts
+ * import { Effect } from "effect"
+ * import { HerdrSession, snapshotPane } from "effect-herdr"
+ * import type { PaneId } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const pane = yield* snapshotPane({ id: "w1:t1:p1" as PaneId })
+ *   return pane.cwd
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category models
+ * @since 0.1.0
+ */
 export interface PaneSnapshot extends Pane, SnapshotCaptured {
   /** Herdr's own monotonic per-pane counter. Comparable across snapshots of the same pane. */
   readonly revision: number
@@ -93,12 +183,13 @@ export interface PaneSnapshot extends Pane, SnapshotCaptured {
 }
 
 /**
- * NOTE: no `activePaneId` field — herdr's `TabInfo` wire shape has no
- * `active_pane_id` (confirmed against a live `tab.get` during slice 3
- * implementation). The per-tab "active pane" concept only exists via
- * `PaneLayoutSnapshot.focused_pane_id` (a `session.snapshot` sub-object),
- * which is a distinct, richer type — not modeled in v1. `activePane`
- * (operations/focus.ts) will source it from there when slice 8 lands.
+ * A tab's state as of `capturedAt`. Returned by `currentTab` and the
+ * `focus.ts` lookups. Has no `activePaneId` field — herdr's per-tab active
+ * pane is only available via a `session.snapshot` layout entry, which
+ * `activePane` reads under the hood.
+ *
+ * @category models
+ * @since 0.1.0
  */
 export interface TabSnapshot extends Tab, SnapshotCaptured {
   readonly label: string
@@ -107,6 +198,13 @@ export interface TabSnapshot extends Tab, SnapshotCaptured {
   readonly agentStatus: AgentStatus
 }
 
+/**
+ * A workspace's state as of `capturedAt`. Returned by `currentWorkspace`
+ * and the `focus.ts` lookups.
+ *
+ * @category models
+ * @since 0.1.0
+ */
 export interface WorkspaceSnapshot extends Workspace, SnapshotCaptured {
   readonly label: string
   readonly activeTabId: TabId

@@ -1,24 +1,18 @@
 /**
- * Env-injected identity accessors — the env boundary of the SDK.
+ * Env-injected identity accessors — the SDK's only env boundary.
  *
- * This is the only place in the SDK that reads `process.env` (via
- * `HerdrSession.currentIds`, resolved once at layer-build in
- * `HerdrSession.ts`). Every accessor here answers "what pane/tab/workspace
- * launched this Effect program", based on herdr's HERDR_PANE_ID /
- * HERDR_TAB_ID / HERDR_WORKSPACE_ID env vars.
+ * Every accessor here answers "what pane/tab/workspace launched this
+ * Effect program", based on herdr's `HERDR_PANE_ID`/`HERDR_TAB_ID`/
+ * `HERDR_WORKSPACE_ID` env vars (resolved once at layer-build, in
+ * `HerdrSession.ts`). `Option.none()` iff those env vars are unset — this
+ * program isn't running inside a herdr-managed pane — with no RPC
+ * round-trip in that case. Fails with `HerdrProtocolError | RpcClientError`
+ * if the env vars are set but the id no longer resolves (e.g. the pane
+ * was closed after launch); a caller that wants to treat that as "not in
+ * herdr" can catch it explicitly with
+ * `Effect.catchTag("HerdrProtocolError", () => Effect.succeed(Option.none()))`.
  *
- * Behavior (per D1):
- *   - `Option.none` iff HERDR_ENV is unset (this program isn't running
- *     inside a herdr-managed pane) — no RPC round-trip in that case.
- *   - fails with `HerdrProtocolError | RpcClientError` if HERDR_* is set
- *     but the id no longer resolves (pane closed after launch, id
- *     compacted) or the transport itself fails. Fails loud — a caller
- *     that wants to interpret "closed pane" as "not in herdr" can do
- *     `Effect.catchTag("HerdrProtocolError", () => Effect.succeed(Option.none()))`
- *     explicitly.
- *
- * Kept in its own module (@#3) to make the env-boundary distinction
- * visually obvious.
+ * @since 0.1.0
  */
 
 import { DateTime, Effect, Option } from "effect"
@@ -28,6 +22,28 @@ import type { HerdrProtocolError } from "../protocol/errors.js"
 import type { PaneSnapshot, TabId, TabSnapshot, WorkspaceId, WorkspaceSnapshot } from "../protocol/schemas.js"
 import { snapshotPane } from "./pane.js"
 
+/**
+ * The pane that launched this Effect program, if any. `Option.none()`
+ * when not running inside a herdr-managed pane.
+ *
+ * **Example** (the primary entry point)
+ *
+ * ```ts
+ * import { Effect, Option } from "effect"
+ * import { HerdrSession, currentPane, runInPane } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const pane = yield* currentPane
+ *   if (Option.isNone(pane)) return yield* Effect.log("not in herdr")
+ *   yield* runInPane(pane.value, "echo hello from effect-herdr")
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
 export const currentPane: Effect.Effect<
   Option.Option<PaneSnapshot>,
   HerdrProtocolError | RpcClientError,
@@ -39,6 +55,27 @@ export const currentPane: Effect.Effect<
   return Option.some(snapshot)
 })
 
+/**
+ * The tab that launched this Effect program, if any. `Option.none()`
+ * when not running inside a herdr-managed pane.
+ *
+ * **Example** (logging the current tab)
+ *
+ * ```ts
+ * import { Effect, Option } from "effect"
+ * import { HerdrSession, currentTab } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const tab = yield* currentTab
+ *   if (Option.isSome(tab)) yield* Effect.log(tab.value.id)
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
 export const currentTab: Effect.Effect<
   Option.Option<TabSnapshot>,
   HerdrProtocolError | RpcClientError,
@@ -59,6 +96,27 @@ export const currentTab: Effect.Effect<
   })
 })
 
+/**
+ * The workspace that launched this Effect program, if any. `Option.none()`
+ * when not running inside a herdr-managed pane.
+ *
+ * **Example** (logging the current workspace)
+ *
+ * ```ts
+ * import { Effect, Option } from "effect"
+ * import { HerdrSession, currentWorkspace } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const workspace = yield* currentWorkspace
+ *   if (Option.isSome(workspace)) yield* Effect.log(workspace.value.id)
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
 export const currentWorkspace: Effect.Effect<
   Option.Option<WorkspaceSnapshot>,
   HerdrProtocolError | RpcClientError,

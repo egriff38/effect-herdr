@@ -1,30 +1,13 @@
 /**
  * Focus combinators — three families with distinct semantics.
  *
- *   active*(parent)   — the child a container remembers as active. Herdr's
- *                       schema guarantees this exists (WorkspaceInfo.active_tab_id
- *                       and PaneLayoutSnapshot.focused_pane_id are non-null),
- *                       so the return type has no Option.
+ * `active*(parent)` reads the child a container remembers as active
+ * (always resolves — herdr's schema guarantees it exists). `focused*`
+ * reads the entity herdr reports as globally focused right now (nullable,
+ * so `Option`-wrapped). `focusedPaneRef` is a live-updating view of the
+ * globally focused pane, fed by herdr's event-push stream.
  *
- *   focused*          — the globally focused entity right now. SessionSnapshot's
- *                       focused_pane_id is nullable (transient unfocus, headless
- *                       server) — Option-wrapped.
- *
- *   focusedPaneRef    — live-updating SubscriptionRef fed by events.subscribe.
- *                       Read-only from the caller's POV; to change focus, call
- *                       `focusPane(pane)` and the ref updates on herdr's broadcast.
- *
- * CORRECTION vs. issue #9's own spec text (found during implementation):
- * the issue claimed `tab.get`'s `TabInfo` wire shape exposes a
- * `focused_pane_id` field to drill `activePane(tab)` from directly — this
- * is WRONG, confirmed absent from the real wire (see `schemas.ts`'s
- * `TabSnapshot` comment and `HerdrRpcs.ts`'s `TabInfoWire`). The real
- * per-tab active-pane source is `session.snapshot`'s `layouts[]` array (a
- * `PaneLayoutSnapshotWire`, keyed by `tab_id`, carrying its own
- * `focused_pane_id`) — verified live against a real herdr server (2-pane
- * split + focus) during implementation of this slice. So `activePane(tab)`
- * calls `session.snapshot` and scans `layouts` for the matching `tab_id`,
- * not `tab.get`.
+ * @since 0.1.0
  */
 
 import { DateTime, Effect, Option, Scope, Stream, SubscriptionRef } from "effect"
@@ -46,11 +29,7 @@ import type {
 } from "../protocol/schemas.js"
 import { snapshotPane } from "./pane.js"
 
-/**
- * `Tab` has a `workspaceId` field; `Workspace` does not (see `schemas.ts`'s
- * `Pane`/`Tab`/`Workspace` identity interfaces) — the runtime discriminant
- * for `activePane`'s sum-typed argument.
- */
+// `Tab` has a `workspaceId` field, `Workspace` does not — the runtime discriminant for `activePane`'s sum-typed argument.
 const isTab = (parent: Tab | Workspace): parent is Tab => "workspaceId" in parent
 
 const decodeTabSnapshot = (wire: TabInfoWire): Effect.Effect<TabSnapshot> =>
@@ -76,22 +55,31 @@ const decodeWorkspaceSnapshot = (wire: WorkspaceInfoWire): Effect.Effect<Workspa
     capturedAt,
   }))
 
-// =============================================================================
-// Per-container active-child (@211-b)
-// =============================================================================
+// Per-container active-child
 
 /**
- * The pane that `parent` remembers as active. Sum-typed argument (@#2):
- * one function, one signature, internal branching on Tab vs. Workspace.
+ * The pane that `parent` (a `Tab` or `Workspace`) remembers as active.
+ * Always resolves (returns a snapshot, not an `Option`) — herdr guarantees
+ * at least one pane per tab within an active session.
  *
- * `activePane(tab)`       → `session.snapshot`, find the `layouts[]` entry
- *                           whose `tab_id` matches, read its `focused_pane_id`.
- * `activePane(workspace)` → `workspace.get` → `active_tab_id`, then the same
- *                           `session.snapshot` layout drill as above.
+ * **Example** (the active pane of the current workspace)
  *
- * Always resolves (returns a snapshot, not an Option) — herdr guarantees
- * >=1 pane per tab per workspace within an active session. Stale ids fail
- * with HerdrProtocolError.
+ * ```ts
+ * import { Effect, Option } from "effect"
+ * import { HerdrSession, activePane, currentWorkspace } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const workspace = yield* currentWorkspace
+ *   if (Option.isNone(workspace)) return
+ *   const pane = yield* activePane(workspace.value)
+ *   yield* Effect.log(pane.id)
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category accessors
+ * @since 0.1.0
  */
 export const activePane = (
   parent: Tab | Workspace,
@@ -118,7 +106,27 @@ export const activePane = (
   })
 
 /**
- * The tab that `workspace` remembers as active.
+ * The tab that `workspace` remembers as active. Always resolves — herdr
+ * guarantees a workspace always has an active tab.
+ *
+ * **Example** (the active tab of the current workspace)
+ *
+ * ```ts
+ * import { Effect, Option } from "effect"
+ * import { HerdrSession, activeTab, currentWorkspace } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const workspace = yield* currentWorkspace
+ *   if (Option.isNone(workspace)) return
+ *   const tab = yield* activeTab(workspace.value)
+ *   yield* Effect.log(tab.id)
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category accessors
+ * @since 0.1.0
  */
 export const activeTab = (
   workspace: Workspace,
@@ -130,15 +138,28 @@ export const activeTab = (
     return yield* decodeTabSnapshot(tabResult.tab)
   })
 
-// =============================================================================
-// Global focus (@211-c)
-// =============================================================================
+// Global focus
 
 /**
- * The pane herdr reports as globally focused right now. `Option.none`
- * when nothing is focused (transient unfocus, headless server) — that's
- * a session-level nullable in herdr's own schema (`session.snapshot`'s
- * top-level `focused_pane_id`).
+ * The pane herdr reports as globally focused right now. `Option.none()`
+ * when nothing is focused (transient unfocus, headless server).
+ *
+ * **Example** (logging the focused pane)
+ *
+ * ```ts
+ * import { Effect, Option } from "effect"
+ * import { HerdrSession, focusedPane } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const pane = yield* focusedPane
+ *   if (Option.isSome(pane)) yield* Effect.log(pane.value.id)
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category accessors
+ * @since 0.1.0
  */
 export const focusedPane: Effect.Effect<
   Option.Option<PaneSnapshot>,
@@ -153,6 +174,27 @@ export const focusedPane: Effect.Effect<
   return Option.some(pane)
 })
 
+/**
+ * The tab herdr reports as globally focused right now. `Option.none()`
+ * when nothing is focused.
+ *
+ * **Example** (logging the focused tab)
+ *
+ * ```ts
+ * import { Effect, Option } from "effect"
+ * import { HerdrSession, focusedTab } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const tab = yield* focusedTab
+ *   if (Option.isSome(tab)) yield* Effect.log(tab.value.id)
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
 export const focusedTab: Effect.Effect<
   Option.Option<TabSnapshot>,
   HerdrProtocolError | RpcClientError,
@@ -167,6 +209,27 @@ export const focusedTab: Effect.Effect<
   return Option.some(tab)
 })
 
+/**
+ * The workspace herdr reports as globally focused right now. `Option.none()`
+ * when nothing is focused.
+ *
+ * **Example** (logging the focused workspace)
+ *
+ * ```ts
+ * import { Effect, Option } from "effect"
+ * import { HerdrSession, focusedWorkspace } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const workspace = yield* focusedWorkspace
+ *   if (Option.isSome(workspace)) yield* Effect.log(workspace.value.id)
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
 export const focusedWorkspace: Effect.Effect<
   Option.Option<WorkspaceSnapshot>,
   HerdrProtocolError | RpcClientError,
@@ -183,13 +246,11 @@ export const focusedWorkspace: Effect.Effect<
 
 /**
  * Read-only surface `focusedPaneRef` hands back — `.get`/`.changes`, never
- * `.set`. A real `SubscriptionRef` already has exactly these two functions
- * as free functions over `self` (see `SubscriptionRef.get`/`.changes`), so
- * this interface isn't a runtime wrapper for safety — it's what stops this
- * module's own return statement from accidentally leaking the writable
- * `SubscriptionRef` itself. Nothing in this module calls
- * `SubscriptionRef.set` on the caller's behalf; only this file's own
- * background loop does.
+ * `.set`. Callers change focus by calling `focusPane`, not by writing to
+ * this ref directly.
+ *
+ * @category models
+ * @since 0.1.0
  */
 export interface FocusedPaneRef {
   readonly get: Effect.Effect<Option.Option<PaneSnapshot>>
@@ -197,36 +258,36 @@ export interface FocusedPaneRef {
 }
 
 /**
- * Live-updating view of the globally focused pane. Read-only from the
- * caller's POV (see `FocusedPaneRef` above) — to change focus, call
- * `focusPane(pane)` (already implemented in `pane.ts`) and this ref updates
- * itself on herdr's next `pane_focused` broadcast.
+ * A live-updating view of the globally focused pane. Read-only from the
+ * caller's POV (see `FocusedPaneRef`) — to change focus, call
+ * `focusPane(pane)` and this ref updates itself on herdr's next
+ * `pane_focused` broadcast. Requires a `Scope` — the underlying event
+ * subscription is torn down when the scope closes.
  *
- * Initial value: this file's own `focusedPane` combinator (a real
- * `session.snapshot` round-trip — never a placeholder `Option.none()`).
- * Live updates: `connection.subscribeEvents(["pane.focused"])`, filtered to
- * `event === "pane_focused"` pushes (underscore form — the wire's push-side
- * form, NOT the dotted subscription-request form used above), each
- * resolved to a fresh `PaneSnapshot` via `snapshotPane`.
+ * **Example** (subscribing to focus changes)
  *
- * Scoping (issue #10/slice 9's "connection-scope teardown" requirement):
- * `connection.subscribeEvents` itself already forks its persistent socket
- * into a scope that is BOTH a child of the connection's own scope AND torn
- * down by this call's own ambient scope (see `HerdrConnection.ts`'s
- * `subscribeEvents` implementation) — so the push stream this function
- * consumes already ends when either scope closes, with no extra wiring
- * needed here. The loop that consumes it and calls `SubscriptionRef.set`
- * is forked into the ordinary ambient scope via `Effect.forkScoped`
- * (matching `HerdrWireProtocol.ts`'s own idiom for its background read
- * loop) — once the push stream ends (for either of the reasons above), the
- * loop's `Stream.runForEach` completes and the fiber exits on its own; a
- * failure on that stream (e.g. the daemon dying) similarly ends the loop,
- * it just isn't surfaced back to a caller who already received the ref.
+ * ```ts
+ * import { BunFileSystem } from "@effect/platform-bun"
+ * import { Effect, Stream } from "effect"
+ * import { HerdrSession, HerdrConnection, focusedPaneRef } from "effect-herdr"
  *
- * A `snapshotPane` lookup that fails for one particular push (e.g. the
- * newly-focused pane was already closed by the time this resolves it) is
- * swallowed rather than clobbering the ref with a guess — the ref keeps its
- * last known-good value and simply skips that one update.
+ * const program = Effect.scoped(
+ *   Effect.gen(function*() {
+ *     const ref = yield* focusedPaneRef
+ *     yield* Stream.runForEach(ref.changes, (pane) => Effect.log(pane))
+ *   }),
+ * )
+ *
+ * program.pipe(
+ *   Effect.provide(HerdrSession.Live),
+ *   Effect.provide(HerdrConnection.Live),
+ *   Effect.provide(BunFileSystem.layer),
+ *   Effect.runPromise,
+ * )
+ * ```
+ *
+ * @category constructors
+ * @since 0.1.0
  */
 export const focusedPaneRef: Effect.Effect<
   FocusedPaneRef,

@@ -1,10 +1,12 @@
 /**
- * Pane manipulation combinators.
+ * Combinators for creating, mutating, and reading terminal panes.
  *
- * These operate on `Pane` identity (not `PaneSnapshot`) — none of them
- * need the mutable state of the pane, only its stable id. Callers who
- * need current state read it via `focus.ts` combinators or `snapshotPane`
- * from this module.
+ * Every combinator here operates on `Pane` identity (id/tabId/workspaceId),
+ * not `PaneSnapshot` — none of them need a pane's mutable state, only its
+ * stable id. Callers who need current state call `snapshotPane` from this
+ * module, or the live-updating accessors in `focus.ts`.
+ *
+ * @since 0.1.0
  */
 
 import { DateTime, Duration, Effect, Function, Predicate, Stream } from "effect"
@@ -14,12 +16,7 @@ import type { Pane, PaneId, PaneSnapshot, Workspace } from "../protocol/schemas.
 import type { PaneInfoWire } from "../protocol/HerdrRpcs.js"
 import type { RpcClientError } from "effect/unstable/rpc/RpcClientError"
 
-/**
- * Decode herdr's raw `PaneInfoWire` (from `pane.get` / `pane.list`) into
- * the SDK's `PaneSnapshot`. `capturedAt` is stamped at decode time via
- * Effect's Clock (through `DateTime.now`), not the wire — herdr does not
- * send a capture timestamp.
- */
+// Decodes herdr's pane wire shape into a `PaneSnapshot`; `capturedAt` is stamped via Effect's Clock, not the wire.
 const decodePaneSnapshot = (wire: PaneInfoWire): Effect.Effect<PaneSnapshot> =>
   Effect.map(DateTime.now, (capturedAt) => ({
     id: wire.pane_id as PaneId,
@@ -34,8 +31,26 @@ const decodePaneSnapshot = (wire: PaneInfoWire): Effect.Effect<PaneSnapshot> =>
   }))
 
 /**
- * List panes in a workspace. Returns snapshots (herdr's `pane.list` RPC
- * returns full records, so giving back only identity would be lossy).
+ * Lists every pane in `workspace`, as snapshots.
+ *
+ * **Example** (listing panes)
+ *
+ * ```ts
+ * import { Effect, Option } from "effect"
+ * import { HerdrSession, currentWorkspace, listPanes } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const workspace = yield* currentWorkspace
+ *   if (Option.isNone(workspace)) return
+ *   const panes = yield* listPanes(workspace.value)
+ *   yield* Effect.log(panes.map((p) => p.id))
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category accessors
+ * @since 0.1.0
  */
 export const listPanes = (
   workspace: Workspace,
@@ -47,8 +62,27 @@ export const listPanes = (
   })
 
 /**
- * Look up a pane's current state. Round-trips to herdr; the returned
- * `PaneSnapshot` is fresh as of this call.
+ * Reads a pane's current state from herdr. Round-trips on every call — the
+ * returned `PaneSnapshot` is fresh as of this call, never cached.
+ *
+ * **Example** (snapshotting a pane)
+ *
+ * ```ts
+ * import { Effect, Option } from "effect"
+ * import { HerdrSession, currentPane, snapshotPane } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const pane = yield* currentPane
+ *   if (Option.isNone(pane)) return
+ *   const fresh = yield* snapshotPane(pane.value)
+ *   yield* Effect.log(fresh.cwd)
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category accessors
+ * @since 0.1.0
  */
 export const snapshotPane = (
   pane: { readonly id: PaneId },
@@ -60,11 +94,12 @@ export const snapshotPane = (
   })
 
 /**
- * Options for `splitPane`. `direction` has no wire-level default — herdr's
- * `PaneSplitParams` requires it (confirmed via `scripts/herdr-schema.json`:
- * `direction` is the only required field, `focus` defaults to `false`
- * server-side). The SDK defaults to `"right"` when omitted so callers don't
- * have to pick every time.
+ * Options for `splitPane`. herdr requires an explicit split `direction` —
+ * there is no server-side default — so the SDK defaults to `"right"` when
+ * omitted. `focus` defaults to `false` server-side.
+ *
+ * @category models
+ * @since 0.1.0
  */
 export interface SplitOptions {
   readonly direction?: "right" | "down"
@@ -75,14 +110,29 @@ const isPaneArg = (u: unknown): u is Pane =>
   Predicate.hasProperty(u, "id") && Predicate.hasProperty(u, "tabId") && Predicate.hasProperty(u, "workspaceId")
 
 /**
- * Split `pane`, creating a new sibling pane. Dual-shaped: data-first
- * (`splitPane(pane, options)`) and data-last (`pane.pipe(splitPane(options))`).
+ * Splits `pane`, creating a new sibling pane. Returns the *new* pane's
+ * identity (not a `PaneSnapshot`) — call `snapshotPane` afterwards for its
+ * state. Dual-shaped: data-first (`splitPane(pane, options)`) and
+ * data-last (`pane.pipe(splitPane(options))`).
  *
- * Returns the *new* pane's identity, not a `PaneSnapshot` — matches the
- * "combinators-that-mutate return identity" convention (`snapshotPane`
- * afterwards if you need state). Underneath: `pane.split`, whose result is
- * the same `pane_info` shape `pane.get` returns (verified live) — decoded
- * to identity only, since a full snapshot decode isn't needed here.
+ * **Example** (splitting to the right)
+ *
+ * ```ts
+ * import { Effect, Option } from "effect"
+ * import { HerdrSession, currentPane, splitPane } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const pane = yield* currentPane
+ *   if (Option.isNone(pane)) return
+ *   const newPane = yield* splitPane(pane.value, { direction: "right" })
+ *   yield* Effect.log(newPane.id)
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category combinators
+ * @since 0.1.0
  */
 export const splitPane: {
   (pane: Pane, options?: SplitOptions): Effect.Effect<Pane, HerdrProtocolError | RpcClientError, HerdrSession>
@@ -108,10 +158,27 @@ export const splitPane: {
 )
 
 /**
- * Focus `pane`. Plain single-argument function, no `dual` (focus is a
- * global, non-relational mutation — there's no meaningful data-last shape).
- * Discards the echoed `pane_info` reply; callers who want fresh state call
- * `snapshotPane` afterwards.
+ * Focuses `pane`. Not dual-shaped — focus is a global mutation, not a
+ * relation between two values, so there's no meaningful data-last form.
+ * Discards herdr's reply; call `snapshotPane` afterwards for fresh state.
+ *
+ * **Example** (focusing a pane)
+ *
+ * ```ts
+ * import { Effect, Option } from "effect"
+ * import { HerdrSession, currentPane, focusPane } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const pane = yield* currentPane
+ *   if (Option.isNone(pane)) return
+ *   yield* focusPane(pane.value)
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category combinators
+ * @since 0.1.0
  */
 export const focusPane = (
   pane: Pane,
@@ -122,66 +189,37 @@ export const focusPane = (
   })
 
 /**
- * Type into `pane`. Dual-shaped and now four overloads deep: two batch
- * (data-first `runInPane(pane, text)` / data-last `pane.pipe(runInPane(text))`,
- * from slice 5/issue #6) and two streaming (data-first
- * `runInPane(pane, chunks)` / data-last `pane.pipe(runInPane(chunks))`, added
- * here in slice 7/issue #8) — `text` is a plain `string`, `chunks` a
- * `Stream.Stream<string, E, R>`.
+ * Types text into `pane`. Wraps `pane.send_text`, herdr's only text-input
+ * method — herdr does not append a trailing Enter itself. Doesn't block on
+ * the shell finishing the command, only on the text having been typed into
+ * the pty (use `waitForOutput` to wait for a result).
  *
- * Underneath: `pane.send_text`, herdr's ONLY text-input method (verified
- * live during implementation — there is no separate `pane.run`). herdr does
- * not append a trailing Enter itself. The batch overloads append `"\n"` to
- * the caller's string before dispatching a SINGLE `pane.send_text` call —
- * that's what makes them "batch" (submit-and-move-on). The streaming
- * overloads dispatch ONE `pane.send_text` per chunk, verbatim, with NO
- * newline appended — the LLM-token-piping use case this exists for needs
- * the caller to control exactly when Enter is submitted by putting `"\n"`
- * inside a chunk themselves.
+ * Two overload pairs, both dual-shaped (data-first and data-last via
+ * `pane.pipe(...)`):
+ *   - batch: `runInPane(pane, text)` takes a plain `string`, appends `"\n"`,
+ *     and dispatches a single `pane.send_text` call.
+ *   - streaming: `runInPane(pane, chunks)` takes a `Stream<string, E, R>`
+ *     and dispatches one `pane.send_text` per chunk, verbatim, with no
+ *     newline appended — useful for piping LLM tokens, where the caller
+ *     decides exactly when to submit by including `"\n"` in a chunk.
  *
- * CORRECTION vs. issue #6's own spec text (batch) and issue #8's own spec
- * text (streaming): both describe dispatching with `{ discard: true }` —
- * Effect's `RpcClient` does support that option (fires the request, never
- * observes the reply), but it was verified live that herdr always answers
- * `pane.send_text` synchronously, including with a real `HerdrProtocolError`
- * (e.g. `pane_not_found`) when the target pane doesn't exist. `{ discard:
- * true }` discards errors along with successes — confirmed via a local
- * RpcTest probe that a failing handler's error never reaches a `discard:
- * true` caller, `Effect.runPromiseExit` reports Success. Using it here
- * would silently swallow exactly the failures this combinator's own
- * signature promises (`HerdrProtocolError` in the error channel), so this
- * implementation awaits each ack normally instead. The "fire-and-forget"
- * ergonomic the issue actually wants — not blocking on the pane's shell
- * finishing the command — falls out for free: `pane.send_text` only acks
- * that the text was typed into the pty, not that the shell finished running
- * it (that's `waitForOutput`, a separate call).
+ * **Example** (batch)
  *
- * Backpressure for the streaming overloads: awaiting each `pane.send_text`
- * round-trip before pulling the next chunk (`Stream.runForEach`, which
- * consumes sequentially) is sufficient — herdr's dial-per-call wire model
- * is one-request-one-reply per call anyway, so there is no separate queue
- * to manage SDK-side (matches issue #8's explicit "no SDK-side queue
- * management" requirement). Chunks are sent strictly in order because
- * `Stream.runForEach` pulls-and-awaits one element at a time; nothing here
- * parallelizes or reorders sends.
+ * ```ts
+ * import { Effect, Option } from "effect"
+ * import { HerdrSession, currentPane, runInPane } from "effect-herdr"
  *
- * Design decision — how the 4 overloads are typed: the runtime dispatch
- * still goes through `Function.dual` with `isPaneArg` as the data-first
- * predicate (same idiom `splitPane`/`waitForOutput` use), extended with an
- * inline `Stream.isStream` check inside the shared body to pick
- * batch-string vs. streaming-chunks semantics. But `Function.dual`'s own
- * generic signature (`<DataLast, DataFirst>(pred, body): DataLast &
- * DataFirst`) can only describe ONE payload shape per body function — it
- * has no way to say "the payload is either `string` (fixed error channel)
- * or `Stream<string, E, R>` (error channel widened by `E`)" and still let
- * `E`/`R` flow through to the public overload's return type. So the public
- * type of `runInPane` is declared as an explicit 4-signature call-signature
- * object (the classic TS "overloads over one implementation" pattern) and
- * the `Function.dual`-produced value is assigned to it directly — this
- * type-checks because each declared signature's return type
- * (`Effect.Effect<void, ..., ...>`) is a strict widening of what the
- * (non-generic, `any`-erased-at-the-seam) runtime body actually returns,
- * which is exactly what covariant Effect error/requirement channels allow.
+ * const program = Effect.gen(function*() {
+ *   const pane = yield* currentPane
+ *   if (Option.isNone(pane)) return
+ *   yield* runInPane(pane.value, "echo hello from effect-herdr")
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category combinators
+ * @since 0.1.0
  */
 const dispatchRunInPane = (
   pane: Pane,
@@ -213,11 +251,13 @@ export const runInPane: {
 )
 
 /**
- * Options for `waitForOutput`. `regex` selects `OutputMatch`'s `"regex"`
- * variant over the default `"substring"`; `timeout` maps directly to the
- * wire's own `pane.wait_for_output` `timeout_ms` — herdr blocks
- * server-side and is the sole timeout mechanism (see the combinator's own
- * doc comment for why no separate SDK-side timer races it).
+ * Options for `waitForOutput`. `regex` selects a regex match over the
+ * default substring match; `timeout` maps to herdr's own
+ * `pane.wait_for_output` timeout — herdr blocks server-side and replies
+ * exactly once with a match or a `timeout` error.
+ *
+ * @category models
+ * @since 0.1.0
  */
 export interface WaitOptions {
   readonly regex?: boolean
@@ -225,42 +265,40 @@ export interface WaitOptions {
 }
 
 /**
- * Block until `match` appears in `pane`'s output, then emit it as a single
- * chunk. Dual-shaped: data-first (`waitForOutput(pane, match, options)`)
- * and data-last (`pane.pipe(waitForOutput(match, options))`), matching
- * `splitPane`/`runInPane`'s pattern.
+ * Blocks until `match` appears in `pane`'s output, then emits the matched
+ * line as a single chunk. Dual-shaped: data-first
+ * (`waitForOutput(pane, match, options)`) and data-last
+ * (`pane.pipe(waitForOutput(match, options))`).
  *
- * Underneath: `pane.wait_for_output`, which is a BLOCKING plain
- * request/reply on herdr's wire (verified live during implementation of
- * issue #7) — herdr itself holds the connection open until match-or-
- * timeout and replies exactly once. This combinator's `Stream` return type
- * is a service-layer ergonomic (matching the issue's `Stream.take(1)`-off
- * acceptance criterion), not a wire-level stream: `Stream.fromEffect` wraps
- * the one RPC call. Emits the matched line — `read.matched_line` — rather
- * than `read.read.text` (herdr's full read-buffer content since the pane's
- * last read): a live probe against `echo ready` confirmed `matched_line`
- * is exactly the shell line that satisfied the match (echoed command, no
- * surrounding buffer noise), which is what "one chunk emitted containing
- * ready" in the issue's E2E acceptance criterion expects.
+ * Wraps `pane.wait_for_output`, a blocking request/reply on herdr's wire —
+ * herdr itself holds the connection open until match-or-timeout and
+ * replies exactly once. The `Stream` return type is a service-layer
+ * ergonomic (composes with `Stream.take`/`Stream.timeoutFail`), not a
+ * wire-level stream. Reads with `source: "recent"` — herdr's scrollback
+ * since the caller's last read — so a `runInPane` immediately before this
+ * call reliably surfaces that command's echoed output. herdr's own
+ * `timeout_ms` is the sole timeout mechanism; a timeout reply is mapped to
+ * `WaitError({ reason: "timeout" })`.
  *
- * Uses `source: "recent"` — verified live to be the right default: it
- * returns the pane's scrollback since the caller's last read (so a
- * `runInPane` immediately before this call reliably surfaces that command's
- * echo/output), unlike `"visible"` (only the current viewport, which a
- * fast-scrolling shell can push the match out of) or `"detection"`
- * (agent-status heuristics, unrelated to raw text matching). No ergonomic
- * exposes a `source` override — callers needing `"visible"`/
- * `"recent_unwrapped"`/`"detection"` semantics can dispatch
- * `session.rpc["pane.wait_for_output"]` directly.
+ * **Example** (waiting for a prompt)
  *
- * herdr's own `timeout_ms` (from `options.timeout`, converted via
- * `Duration.toMillis`) is the sole timeout mechanism — no SDK-side
- * `Stream.timeoutFail` races it, since herdr already replies exactly once
- * with a `code: "timeout"` `HerdrProtocolError` (verified live) after
- * `timeout_ms` elapses; a second independent timer would only risk racing
- * herdr's own accurate one. That protocol error is mapped to
- * `WaitError({ reason: "timeout" })` here so callers get the SDK's own
- * tagged error rather than a raw wire error code.
+ * ```ts
+ * import { Effect, Option, Stream } from "effect"
+ * import { HerdrSession, currentPane, runInPane, waitForOutput } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const pane = yield* currentPane
+ *   if (Option.isNone(pane)) return
+ *   yield* runInPane(pane.value, "echo ready")
+ *   const line = yield* waitForOutput(pane.value, "ready").pipe(Stream.runHead)
+ *   yield* Effect.log(line)
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category combinators
+ * @since 0.1.0
  */
 export const waitForOutput: {
   (
@@ -295,9 +333,27 @@ export const waitForOutput: {
 )
 
 /**
- * Close a pane. Wraps `pane.close` — herdr handles collapsing the parent
- * tab/workspace if this was the last pane. Returns `void` on success
- * (herdr's own reply is a bare `{"type":"ok"}` ack with no payload).
+ * Closes `pane`. herdr collapses the parent tab/workspace automatically if
+ * this was the last pane. Resolves to `void` on success.
+ *
+ * **Example** (closing a pane)
+ *
+ * ```ts
+ * import { Effect, Option } from "effect"
+ * import { HerdrSession, currentPane, closePane, splitPane } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const pane = yield* currentPane
+ *   if (Option.isNone(pane)) return
+ *   const newPane = yield* splitPane(pane.value)
+ *   yield* closePane(newPane)
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category combinators
+ * @since 0.1.0
  */
 export const closePane = (pane: Pane): Effect.Effect<void, HerdrProtocolError | RpcClientError, HerdrSession> =>
   Effect.gen(function*() {

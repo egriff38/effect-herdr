@@ -2,63 +2,28 @@
  * Translates between Effect's RPC wire envelope and herdr's actual socket
  * protocol.
  *
- * CRITICAL, EMPIRICALLY VERIFIED CORRECTION (during implementation of issue
- * #1/#2): herdr's socket is NOT a persistent multiplexed connection for
- * ordinary request/reply methods. Verified three independent ways (raw `nc`,
- * a Python socket client, and this SDK's own E2E test) that herdr closes the
- * underlying connection immediately after answering exactly one request.
- * Herdr's own docs say it explicitly, easy to underweight on first read:
+ * herdr's socket is not a persistent multiplexed connection for ordinary
+ * request/reply methods: it closes the underlying connection immediately
+ * after answering exactly one request. Only `events.subscribe` keeps its
+ * connection open (handled separately, in `HerdrEventsSocket.ts`). This
+ * module hides the reconnect-per-call cost behind an `RpcClient.Protocol`
+ * that looks and behaves like an ordinary long-lived client — callers using
+ * `conn.rpc["workspace.list"]()` never see the dial-per-call detail.
  *
- *   "Event subscriptions keep the connection open after the initial response."
- *
- * — which by omission means every OTHER method does NOT keep the connection
- * open. One request, one reply, one connection, then herdr closes it.
- *
- * This invalidates the "open once, reuse for many calls" model the original
- * design docs (D1-D3) assumed (that model is correct for HTTP-keep-alive or
- * WebSocket transports, which is why `RpcClient.makeProtocolSocket` assumes
- * it — but herdr's socket is neither of those).
- *
- * Fix (documented here as the load-bearing correction; see docs/design.md D4):
- * `send` dials a FRESH socket connection per RPC call, writes the request,
- * reads exactly one reply line, decodes it, and closes. The `RpcClient`
- * surface (`conn.rpc["workspace.list"]()`) stays ergonomically identical —
- * the reconnect-per-call cost is hidden behind this adapter, not exposed to
- * callers. `events.subscribe` is NOT covered by this adapter; it needs its
- * own persistent-connection handling and is deferred to slice 9 (issue #10),
- * which will dial a separate, genuinely long-lived connection dedicated to
- * the subscription stream.
- *
- * Wire shapes (unchanged from the original — still accurate):
+ * Wire shapes:
  *   Request:  {"id":"<id>","method":"<dotted.method>","params":{...}}
  *   Success:  {"id":"<id>","result":{"type":"...", ...fields}}
  *   Error:    {"id":"<id>","error":{"code":"...","message":"..."}}
  *
- * FOURTH CORRECTION, discovered during implementation of issue #7/slice 6:
- * herdr's wire error body uses the key `message`, but `HerdrProtocolError`'s
- * schema (`protocol/errors.ts`) declares the field `rawMessage` (chosen to
- * avoid colliding with `Error.prototype.message`, which the schema's own
- * getter overrides). Passing `parsed.error` straight through as the Fail
- * cause's `error` therefore decoded successfully as `Exit`'s outer schema
- * but failed `HerdrProtocolError`'s own field decode with a `SchemaError`
- * defect (`Effect.Die`, not the intended typed failure) on EVERY protocol
- * error — silently breaking every `Effect.catchTag("HerdrProtocolError", …)`
- * call site in the SDK (e.g. `operations/pane.ts`'s `waitForOutput`'s
- * timeout-code check). `decodeReplyLine` below now maps
- * `{code, message}` → `{_tag: "HerdrProtocolError", code, rawMessage: message}`
- * before handing it to the `RpcClient`'s `Schema.Exit` decoder — the added
- * `_tag` matches `HerdrProtocolError`'s own `Schema.tag("HerdrProtocolError")`
- * discriminator field, required for the schema's union-member match to
- * succeed (the RPC's declared `error` schema decodes a union of every
- * tagged error variant the group's methods can fail with).
- *
- * Every `HerdrRpcs` tag IS the herdr `method` string verbatim (e.g.
- * `"workspace.list"`) — this only works because `Rpc.make` tags in
- * `HerdrRpcs.ts` are written as herdr's dotted method names, not
- * PascalCase RPC-library-style tags.
+ * Every `HerdrRpcs` tag is the herdr `method` string verbatim (e.g.
+ * `"workspace.list"`), and herdr's `{code, message}` error body is remapped
+ * to `HerdrProtocolError`'s `{code, rawMessage}` shape (with an added
+ * `_tag` discriminator) before it reaches the `RpcClient`'s schema decoder.
  *
  * `supportsAck: false` and no ping/pong — herdr's protocol has neither
  * concept. `supportsTransferables: false` — herdr is JSON-only.
+ *
+ * @since 0.1.0
  */
 
 import * as NodeSocket from "@effect/platform-bun/BunSocket"
@@ -82,22 +47,9 @@ interface HerdrWireLine {
 const isHerdrWireLine = (u: unknown): u is HerdrWireLine =>
   typeof u === "object" && u !== null && "id" in u && typeof (u as { id: unknown }).id === "string"
 
-/**
- * THIRD CORRECTION, empirically verified during implementation of issue #9:
- * Effect's Schema JSON codec encodes an omitted `Schema.optional(...)` field
- * as an EXPLICIT `null` in the JSON payload, not as a missing key. herdr's
- * Rust-side deserializer rejects `null` for a `bool`/`string` optional field
- * outright (`{"error":{"code":"invalid_request","message":"invalid type:
- * null, expected a boolean..."}}`) — verified live via raw socket against
- * `pane.split`'s optional `focus` field. Worse: herdr's error reply in this
- * case carries `"id":""` (empty string, not the real request id) because
- * the deserialization failure happens before herdr can even extract the
- * id — so the reply can never be matched back to the pending request by
- * `RpcClient`'s response-collector, and the call hangs forever (observed:
- * 20s+ test timeout, not a herdr-side delay). Fix: strip any top-level
- * `null`-valued key from the encoded payload before sending — herdr wants
- * a MISSING optional key, never an explicit `null`.
- */
+// herdr's Rust-side deserializer rejects an explicit `null` for optional
+// bool/string fields (and drops the request id from the error reply when it
+// does) — strip null-valued keys so optional fields go missing instead.
 const stripNullValues = (payload: unknown): unknown => {
   if (payload === null || payload === undefined) return {}
   if (typeof payload !== "object" || Array.isArray(payload)) return payload
@@ -111,7 +63,7 @@ const stripNullValues = (payload: unknown): unknown => {
 const encodeRequestLine = (message: FromClientEncoded): string | undefined => {
   if (message._tag !== "Request") {
     // herdr has no Ack/Interrupt/Eof/Ping wire concept for request/reply
-    // methods — those only matter for events.subscribe (slice 9, issue #10).
+    // methods — those only matter for events.subscribe, handled separately.
     return undefined
   }
   return JSON.stringify({
@@ -201,11 +153,15 @@ const dialOnce = (
   )
 
 /**
- * Builds a `RpcClient.Protocol` where every `send` dials a fresh connection
- * per request, per the herdr one-request-per-connection correction above.
- * `run` registers the delivery callback but has no shared read loop to run,
- * since there is no shared connection — each `send` delivers its own reply
- * directly via `writeResponse`.
+ * Builds an `RpcClient.Protocol` backed by herdr's per-call-dial socket
+ * transport — every `send` dials a fresh connection, writes the request,
+ * reads exactly one reply, and delivers it via `writeResponse`. There is no
+ * shared connection to read from continuously, so `run` only registers the
+ * delivery callback. Consumed by `HerdrConnection.make`, not called directly
+ * by SDK users.
+ *
+ * @category constructors
+ * @since 0.1.0
  */
 export const makeHerdrProtocol = (
   socketPath: string,

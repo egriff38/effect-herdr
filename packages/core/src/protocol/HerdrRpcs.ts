@@ -1,26 +1,19 @@
 /**
  * The typed RpcGroup for herdr's socket protocol.
  *
- * v1 currently ships: `ping`, `workspace.list`, `workspace.get`, `pane.list`,
+ * v1 ships `ping`, `workspace.list`, `workspace.get`, `pane.list`,
  * `pane.get`, `tab.get`, `pane.split`, `pane.focus`, `session.snapshot`,
- * `pane.send_text`, `pane.read`, `pane.wait_for_output`. Every subsequent
- * slice adds methods to this group.
+ * `pane.send_text`, `pane.close`, `pane.read`, and `pane.wait_for_output`.
+ * Every method here is a plain request/reply — `pane.wait_for_output`
+ * blocks server-side until match-or-timeout and replies exactly once, it
+ * is not `RpcSchema.Stream`. herdr's one true server-push stream,
+ * `events.subscribe`, lives outside this `RpcGroup` (see
+ * `HerdrConnection.subscribeEvents`) because its socket stays open across
+ * multiple pushes, unlike every method modeled here. Most SDK users never
+ * touch this module directly — reach for `HerdrSession`'s `rpc` client or
+ * the `operations/` combinators built on top of it instead.
  *
- * CORRECTION vs. the original design sketch: `pane.wait_for_output` is a
- * plain request/reply on herdr's wire (confirmed against
- * `scripts/herdr-schema.json` and a live probe during implementation of
- * issue #7/slice 6) — herdr blocks server-side until match/timeout and
- * replies once. It is NOT `RpcSchema.Stream`. `events.subscribe` IS a real
- * server-push stream (ack on subscribe, then pushed events); slice 9 adds
- * that separately, outside this `RpcGroup` (see `HerdrConnection.ts`'s
- * comments). `operations/pane.ts`'s `waitForOutput` (issue #7) wraps this
- * one blocking RPC call as a single-element `Stream` — an ergonomic
- * decision at the service layer, not a wire-level stream.
- *
- * SECOND CORRECTION (D4, docs/design.md): herdr's socket closes after
- * exactly one request/reply for ordinary methods. `HerdrWireProtocol.ts`
- * handles this by dialing a fresh connection per call — irrelevant to the
- * schemas in this file, which only describe payload/success/error shapes.
+ * @since 0.1.0
  */
 
 import { Schema } from "effect"
@@ -31,16 +24,12 @@ import { HerdrProtocolError } from "./errors.js"
 // Wire schemas — mirror herdr's ResponseResult variants and ErrorBody 1:1
 // =============================================================================
 
-/** `{"id":"req_1","result":{"type":"pong"}}` (herdr also sends version/protocol/capabilities; decoded loosely). */
+/** Decodes `ping`'s reply, `{"type":"pong"}`. */
 export class PongResult extends Schema.Class<PongResult>("PongResult")({
   type: Schema.Literal("pong"),
 }) {}
 
-/**
- * One entry of herdr's `WorkspaceInfo` (from `workspace.list` / `workspace.get`).
- * No `revision` field — confirmed absent from herdr's real schema during
- * implementation of issue #4 (only `PaneInfo`/`AgentInfo` have `revision`).
- */
+/** One entry of herdr's `WorkspaceInfo`, from `workspace.list` / `workspace.get`. */
 export class WorkspaceInfoWire extends Schema.Class<WorkspaceInfoWire>("WorkspaceInfoWire")({
   workspace_id: Schema.String,
   number: Schema.Number,
@@ -52,17 +41,19 @@ export class WorkspaceInfoWire extends Schema.Class<WorkspaceInfoWire>("Workspac
   agent_status: Schema.Literals(["idle", "working", "blocked", "done", "unknown"]),
 }) {}
 
+/** Decodes `workspace.list`'s reply. */
 export class WorkspaceListResult extends Schema.Class<WorkspaceListResult>("WorkspaceListResult")({
   type: Schema.Literal("workspace_list"),
   workspaces: Schema.Array(WorkspaceInfoWire),
 }) {}
 
+/** Decodes `workspace.get`'s reply. */
 export class WorkspaceInfoResult extends Schema.Class<WorkspaceInfoResult>("WorkspaceInfoResult")({
   type: Schema.Literal("workspace_info"),
   workspace: WorkspaceInfoWire,
 }) {}
 
-/** One entry of herdr's `TabInfo` (from `tab.get`). No `revision` field either. */
+/** One entry of herdr's `TabInfo`, from `tab.get`. */
 export class TabInfoWire extends Schema.Class<TabInfoWire>("TabInfoWire")({
   tab_id: Schema.String,
   workspace_id: Schema.String,
@@ -73,16 +64,17 @@ export class TabInfoWire extends Schema.Class<TabInfoWire>("TabInfoWire")({
   agent_status: Schema.Literals(["idle", "working", "blocked", "done", "unknown"]),
 }) {}
 
+/** Decodes `tab.get`'s reply. */
 export class TabInfoResult extends Schema.Class<TabInfoResult>("TabInfoResult")({
   type: Schema.Literal("tab_info"),
   tab: TabInfoWire,
 }) {}
 
 /**
- * One entry of herdr's `PaneInfo` (from `pane.list` / `pane.get`). Only a
- * subset of the real wire fields are modeled — the ones this SDK's value
- * objects need. herdr sends more (scroll, tokens, terminal_title, etc.);
- * unmodeled fields are ignored by the schema decoder, not an error.
+ * One entry of herdr's `PaneInfo`, from `pane.list` / `pane.get`. Only the
+ * subset of wire fields this SDK's value objects need is modeled — herdr
+ * sends more (scroll, tokens, terminal_title, etc.), which the schema
+ * decoder simply ignores.
  */
 export class PaneInfoWire extends Schema.Class<PaneInfoWire>("PaneInfoWire")({
   pane_id: Schema.String,
@@ -96,23 +88,24 @@ export class PaneInfoWire extends Schema.Class<PaneInfoWire>("PaneInfoWire")({
   agent: Schema.optional(Schema.NullOr(Schema.String)),
 }) {}
 
+/** Decodes `pane.list`'s reply. */
 export class PaneListResult extends Schema.Class<PaneListResult>("PaneListResult")({
   type: Schema.Literal("pane_list"),
   panes: Schema.Array(PaneInfoWire),
 }) {}
 
+/** Decodes `pane.get`'s reply — also reused by `pane.split` and `pane.focus`, which echo the same shape. */
 export class PaneInfoResult extends Schema.Class<PaneInfoResult>("PaneInfoResult")({
   type: Schema.Literal("pane_info"),
   pane: PaneInfoWire,
 }) {}
 
 /**
- * One entry of herdr's `session.snapshot` `layouts` array — the per-tab
- * pane layout, keyed by `tab_id`. Only `workspace_id`/`tab_id`/
- * `focused_pane_id` are modeled — the SDK only needs "which pane is active
- * within this tab" (`activePane(tab)`, issue #9). herdr also sends `zoomed`,
- * `area`, `panes`, `splits` (full layout geometry); unmodeled, ignored by
- * the schema decoder, not an error.
+ * One entry of `session.snapshot`'s `layouts` array — the per-tab pane
+ * layout, keyed by `tab_id`. Only the fields needed to answer "which pane
+ * is active within this tab" (`activePane`) are modeled; herdr's real
+ * layout entry also carries `zoomed`/`area`/`panes`/`splits` geometry,
+ * which is ignored.
  */
 export class PaneLayoutSnapshotWire extends Schema.Class<PaneLayoutSnapshotWire>("PaneLayoutSnapshotWire")({
   workspace_id: Schema.String,
@@ -121,18 +114,13 @@ export class PaneLayoutSnapshotWire extends Schema.Class<PaneLayoutSnapshotWire>
 }) {}
 
 /**
- * `session.snapshot`'s result. CORRECTION vs. issue #9's own spec text: the
- * issue claimed `tab.get`'s `TabInfo` exposes a `focused_pane_id` field to
- * drill `activePane(tab)` from — confirmed ABSENT from the real wire (see
- * `TabInfoWire` above / `schemas.ts`'s `TabSnapshot` comment). The real
- * per-tab active-pane source is `SessionSnapshotResult.snapshot.layouts[]`
- * (a `PaneLayoutSnapshotWire`, keyed by `tab_id`), verified live against a
- * real herdr server (2-pane split + focus) during implementation of issue
- * #9. The three top-level `focused_*_id` fields are nullable (verified via
- * `scripts/herdr-schema.json`'s `SessionSnapshot` def) — that's the source
- * for `focusedPane`/`focusedTab`/`focusedWorkspace`'s `Option` wrapping.
- * Only the fields this SDK's `focus.ts` combinators need are modeled;
- * herdr's real `SessionSnapshot` also sends `agents` (unmodeled).
+ * Decodes `session.snapshot`'s reply. The per-tab active-pane source is
+ * `snapshot.layouts[]` (keyed by `tab_id`), not a field on `TabInfo` —
+ * `activePane(tab)` reads it from here. The three top-level
+ * `focused_*_id` fields are nullable, which is the source of
+ * `focusedPane`/`focusedTab`/`focusedWorkspace`'s `Option` wrapping. Only
+ * the fields `operations/focus.ts` needs are modeled; herdr's real
+ * `SessionSnapshot` also sends `agents`, which is ignored.
  */
 export class SessionSnapshotResult extends Schema.Class<SessionSnapshotResult>("SessionSnapshotResult")({
   type: Schema.Literal("session_snapshot"),
@@ -148,27 +136,17 @@ export class SessionSnapshotResult extends Schema.Class<SessionSnapshotResult>("
 }) {}
 
 /**
- * `pane.send_text`'s success reply — a bare `{"type":"ok"}` ack with no
- * payload fields (confirmed live during implementation of issue #6/slice
- * 5). herdr's socket protocol has no separate "submit" concept: the
- * caller's `text` is typed verbatim into the pane, and if it should also
- * run, the caller must include a trailing `\n` themselves — herdr does not
- * append one. See `operations/pane.ts`'s `runInPane` for the SDK-level
- * batch semantics built on top of this bare ack.
+ * Decodes a bare success ack, `{"type":"ok"}` — `pane.send_text`'s and
+ * `pane.close`'s reply. herdr's socket protocol has no separate "submit"
+ * concept: for `pane.send_text`, the caller's `text` is typed verbatim
+ * into the pane, and if it should also run, the caller must include a
+ * trailing `\n` themselves.
  */
 export class OkResult extends Schema.Class<OkResult>("OkResult")({
   type: Schema.Literal("ok"),
 }) {}
 
-/**
- * One `pane.read` reply's `read` payload (from `scripts/herdr-schema.json`'s
- * `PaneReadResult`, confirmed live). Added as a byproduct of issue #6's E2E
- * test (verifying `runInPane`'s text actually reached the pane's shell);
- * slice 6's `waitForOutput` (issue #7) also needs read-adjacent RPC access
- * and reuses this rather than inventing a second wire class — its own
- * `output_matched` reply nests the SAME `PaneReadResult` shape under a
- * `read` field (see the shared-context doc's wire facts).
- */
+/** One `pane.read` reply's `read` payload. */
 export class PaneReadResult extends Schema.Class<PaneReadResult>("PaneReadResult")({
   type: Schema.Literal("pane_read"),
   read: Schema.Struct({
@@ -185,29 +163,29 @@ export class PaneReadResult extends Schema.Class<PaneReadResult>("PaneReadResult
 
 /**
  * `pane.wait_for_output`'s `match` payload — a discriminated union of
- * substring/regex matchers (confirmed via `scripts/herdr-schema.json`'s
- * `OutputMatch` and live probing during implementation of issue #7). No
- * existing discriminated-union example elsewhere in this codebase (every
- * prior wire type is a flat struct), so this follows `Schema.Union` of two
- * `type`-tagged `Schema.Struct`s — the natural encoding for a wire union
- * whose members are distinguished by a literal field, mirroring how herdr
- * itself models it.
+ * substring and regex matchers.
+ *
+ * @category models
+ * @since 0.1.0
  */
 export const OutputMatch = Schema.Union([
   Schema.Struct({ type: Schema.Literal("substring"), value: Schema.String }),
   Schema.Struct({ type: Schema.Literal("regex"), value: Schema.String }),
 ])
+
+/**
+ * The decoded type of {@link OutputMatch}.
+ *
+ * @category models
+ * @since 0.1.0
+ */
 export type OutputMatch = typeof OutputMatch.Type
 
 /**
- * `pane.wait_for_output`'s success reply on a match (verified live during
- * implementation of issue #7): `{"type":"output_matched","pane_id",
- * "revision","matched_line","read":<PaneReadResult>}`. Nests the SAME
- * `read` shape `PaneReadResult` above models — declared as a bare struct
- * (not the `PaneReadResult` class itself) since here it's a nested field,
- * not a top-level reply; `PaneReadResult`'s own `read` sub-struct schema
- * is duplicated rather than referenced because `Schema.Class` fields
- * aren't reusable as struct fragments without unwrapping.
+ * Decodes `pane.wait_for_output`'s success reply on a match. Nests the
+ * same `read` shape `PaneReadResult` models, duplicated inline as a bare
+ * struct rather than referencing `PaneReadResult` itself, since here it's
+ * a nested field rather than a top-level reply.
  */
 export class PaneWaitForOutputResult
   extends Schema.Class<PaneWaitForOutputResult>("PaneWaitForOutputResult")({
@@ -232,6 +210,30 @@ export class PaneWaitForOutputResult
 // The RpcGroup
 // =============================================================================
 
+/**
+ * The complete typed RpcGroup herdr's `HerdrConnection`/`HerdrSession`
+ * build their client from. Enumerates every method, its payload schema,
+ * its success schema, and its error schema (`HerdrProtocolError`
+ * uniformly).
+ *
+ * **Example** (calling a method through the built client)
+ *
+ * ```ts
+ * import { Effect } from "effect"
+ * import { HerdrSession } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const session = yield* HerdrSession
+ *   const { workspaces } = yield* session.rpc["workspace.list"]()
+ *   return workspaces
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category models
+ * @since 0.1.0
+ */
 export const HerdrRpcs = RpcGroup.make(
   Rpc.make("ping", {
     success: PongResult,
@@ -262,13 +264,9 @@ export const HerdrRpcs = RpcGroup.make(
     error: HerdrProtocolError,
   }),
   /**
-   * `pane.split` payload — wire also accepts `workspace_id`, `cwd`, `env`,
-   * `ratio` (all optional, confirmed via `scripts/herdr-schema.json`'s
-   * `PaneSplitParams`) but the SDK's `SplitOptions` (operations/pane.ts,
-   * issue #5) only exposes `direction`/`focus`, so only the fields the SDK
-   * actually sends are modeled here. Result reuses `PaneInfoResult` — herdr
-   * replies with the SAME `{"type":"pane_info","pane":<PaneInfo>}` shape
-   * `pane.get` returns (verified live), not a distinct wire class.
+   * Splits a pane. The wire also accepts `workspace_id`/`cwd`/`env`/`ratio`
+   * (all optional), but only `target_pane_id`/`direction`/`focus` — what
+   * `SplitOptions` exposes — are modeled here.
    */
   Rpc.make("pane.split", {
     payload: {
@@ -279,50 +277,37 @@ export const HerdrRpcs = RpcGroup.make(
     success: PaneInfoResult,
     error: HerdrProtocolError,
   }),
-  /** `pane.focus` also replies with `PaneInfoResult` (verified live) — the newly-focused pane's echoed state. */
+  /** Focuses a pane; replies with the newly-focused pane's echoed state. */
   Rpc.make("pane.focus", {
     payload: { pane_id: Schema.String },
     success: PaneInfoResult,
     error: HerdrProtocolError,
   }),
-  /** `session.snapshot` params are empty (`{}`, confirmed via `scripts/herdr-schema.json`'s `EmptyParams`). */
+  /** Captures the whole session's state in one call; takes no params. */
   Rpc.make("session.snapshot", {
     success: SessionSnapshotResult,
     error: HerdrProtocolError,
   }),
   /**
-   * `pane.send_text` — herdr's ONLY text-input method (verified live during
-   * implementation of issue #6/slice 5); there is no separate `pane.run`.
-   * Params are exactly `{ pane_id, text }` — no submit/enter flag. Success
-   * replies with a bare `OkResult` (`{"type":"ok"}`), no echoed pane state.
-   * Submission is purely "does `text` end in `\n`" — herdr appends nothing.
-   * See `operations/pane.ts`'s `runInPane` for the SDK's batch semantics.
+   * Types text into a pane — herdr's only text-input method; there is no
+   * separate "run" method. Submission is purely "does `text` end in
+   * `\n`" — herdr appends nothing itself.
    */
   Rpc.make("pane.send_text", {
     payload: { pane_id: Schema.String, text: Schema.String },
     success: OkResult,
     error: HerdrProtocolError,
   }),
-  /**
-   * `pane.close` — close/destroy a pane. Params `{pane_id}`; success reply
-   * is a bare `OkResult` (`{"type":"ok"}`) per `scripts/herdr-schema.json`'s
-   * `PaneTarget`/`OkResult`. herdr's built-in `pane.close` handles tab and
-   * workspace collapse if the pane was the last child.
-   */
+  /** Closes/destroys a pane; herdr collapses the parent tab/workspace if it was the last child. */
   Rpc.make("pane.close", {
     payload: { pane_id: Schema.String },
     success: OkResult,
     error: HerdrProtocolError,
   }),
   /**
-   * `pane.read` — added as a byproduct of issue #6's E2E verification (no
-   * ergonomic SDK combinator wraps this yet; slice 6's `waitForOutput`,
-   * issue #7, is the first to need read-adjacent access as a first-class
-   * combinator). Params per `scripts/herdr-schema.json`'s `PaneReadParams`:
-   * `pane_id`/`source` required, `format`/`lines`/`strip_ansi` optional —
-   * only `pane_id`/`source` are modeled since that's all any current
-   * caller sends; `format` defaults to `"text"`/`strip_ansi` to `true`
-   * server-side when omitted (confirmed via the schema).
+   * Reads a pane's buffered output. `format`/`lines`/`strip_ansi` are also
+   * accepted server-side (defaulting to `"text"`/unset/`true`) but unused
+   * by any current SDK caller, so only `pane_id`/`source` are modeled.
    */
   Rpc.make("pane.read", {
     payload: {
@@ -333,16 +318,12 @@ export const HerdrRpcs = RpcGroup.make(
     error: HerdrProtocolError,
   }),
   /**
-   * `pane.wait_for_output` — a BLOCKING plain request/reply (verified live
-   * during implementation of issue #7): herdr holds the connection open
-   * server-side until the match happens or `timeout_ms` elapses, then
-   * replies exactly once. On timeout it replies with a real
-   * `HerdrProtocolError` whose `code` is `"timeout"` (added to
-   * `KnownHerdrErrorCode` in `errors.ts`), not a distinct wire signal.
-   * Params per `scripts/herdr-schema.json`'s `PaneWaitForOutputParams`:
-   * `lines`/`strip_ansi` are also accepted server-side but unused by any
-   * current caller (`operations/pane.ts`'s `waitForOutput`), so only
-   * `pane_id`/`source`/`match`/`timeout_ms` are modeled here.
+   * Blocks until `match` appears in the pane's output or `timeout_ms`
+   * elapses, then replies exactly once — a plain request/reply, not a
+   * wire-level stream. On timeout, replies with a `HerdrProtocolError`
+   * whose `code` is `"timeout"`. `lines`/`strip_ansi` are also accepted
+   * server-side but unused by any current SDK caller, so only
+   * `pane_id`/`source`/`match`/`timeout_ms` are modeled.
    */
   Rpc.make("pane.wait_for_output", {
     payload: {
@@ -356,4 +337,10 @@ export const HerdrRpcs = RpcGroup.make(
   }),
 )
 
+/**
+ * The decoded type of {@link HerdrRpcs}.
+ *
+ * @category models
+ * @since 0.1.0
+ */
 export type HerdrRpcs = typeof HerdrRpcs

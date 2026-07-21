@@ -1,23 +1,15 @@
 /**
- * The connection primitive (D3, corrected per D4 — see docs/design.md).
+ * A scoped connection to a running herdr server.
  *
- * Three tiers exposed:
- *   - `make(opts)`  — scoped Effect. The advanced form (case B — e.g. the
- *                     E2E harness — brackets lifetime explicitly).
- *   - `layer(opts)` — bring-your-own-config Layer.
- *   - `Live`        — sound-defaults Layer, resolves via `HerdrSocketPathConfig`.
+ * Exposes a typed RPC client (`rpc`) and a way to subscribe to
+ * server-pushed events (`subscribeEvents`). Three constructors are
+ * provided: `make` (a scoped `Effect` for callers who manage lifetime
+ * explicitly), `layer` (bring-your-own socket path), and `Live` (resolves
+ * the socket path from `HerdrSocketPathConfig`). Every RPC call dials its
+ * own fresh connection internally — `rpc` still reads as a single
+ * long-lived client from the caller's perspective.
  *
- * Hard-coded to `HerdrRpcs` (@143) — not generic. v2 will add a `serve`
- * method for `RpcServer<PluginRpcs>` running over the same connection
- * primitive; that is additive, not a rewrite of this file.
- *
- * D4 correction: herdr's socket closes after exactly one request/reply for
- * ordinary methods (verified empirically — see HerdrWireProtocol.ts's header
- * comment for the full account). `make`/`layer`/`Live` no longer hold open a
- * single persistent socket for the connection's lifetime; each RPC call
- * dials its own fresh connection internally (see `makeHerdrProtocol`).
- * `rpc` still reads as one long-lived client from the caller's perspective —
- * the reconnect-per-call cost is hidden behind this module, not exposed.
+ * @since 0.1.0
  */
 
 import { Context, Effect, Exit, Layer, Scope } from "effect"
@@ -31,21 +23,21 @@ import { makeHerdrProtocol } from "./HerdrWireProtocol.js"
 import { ConnectionRefused, SocketFileMissing, TransportOpenFailed } from "./protocol/errors.js"
 import { HerdrRpcs } from "./protocol/HerdrRpcs.js"
 
+/**
+ * The capabilities a `HerdrConnection` provides: a typed `rpc` client and
+ * `subscribeEvents` for the server's event-push stream.
+ *
+ * @category models
+ * @since 0.1.0
+ */
 export interface HerdrConnectionShape {
   readonly rpc: RpcClient.RpcClient<RpcGroup.Rpcs<typeof HerdrRpcs>, RpcClientError.RpcClientError>
   /**
-   * Subscribe to herdr's `events.subscribe` push stream, filtered
-   * server-side to `types` (dotted form, e.g. `"pane.focused"`). Scoped:
-   * the underlying persistent socket (`HerdrEventsSocket.subscribe`) stays
-   * open, and the returned Stream keeps emitting, for as long as the
-   * calling `Scope` does.
-   *
-   * Deliberately NOT a connection-wide `disconnects` signal (that design
-   * was dropped — see issue #10's revision history) and not memoized per
-   * `HerdrConnection` — every call opens its OWN independent subscribe
-   * connection, matching herdr's per-subscription wire model (verified
-   * live: one `events.subscribe` request per connection, not a
-   * multiplexed fan-out of one shared subscription).
+   * Subscribes to herdr's `events.subscribe` push stream, filtered
+   * server-side to `types` (dotted form, e.g. `"pane.focused"`). Each call
+   * opens its own independent subscription connection. The returned
+   * `Stream` keeps emitting until either the connection's own scope or
+   * the caller-supplied `Scope` closes, whichever comes first.
    */
   readonly subscribeEvents: (
     types: ReadonlyArray<string>,
@@ -53,23 +45,38 @@ export interface HerdrConnectionShape {
 }
 
 /**
- * `Context.Service` tag. Two capabilities: the typed `rpc` client (D4 —
- * per-call dial, transparent to callers) and `subscribeEvents` (issue #10/
- * slice 9 — herdr's one persistent-connection exception, `events.subscribe`).
+ * `Context.Service` tag for the herdr connection. Provides `rpc` (a typed
+ * client, dialed per call) and `subscribeEvents` (a persistent push-stream
+ * subscription). No default implementation — provide `make`, `layer`, or
+ * `Live`.
  *
- * No default implementation — a program that never provides `make`/`layer`/
- * `Live` fails at runtime with a "service not found" defect, which is the
- * correct behavior for a resource this load-bearing.
+ * **Example** (providing a connection)
+ *
+ * ```ts
+ * import { BunFileSystem } from "@effect/platform-bun"
+ * import { Effect } from "effect"
+ * import { HerdrConnection } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const connection = yield* HerdrConnection
+ *   yield* connection.rpc["workspace.list"]()
+ * })
+ *
+ * program.pipe(
+ *   Effect.provide(HerdrConnection.Live),
+ *   Effect.provide(BunFileSystem.layer),
+ *   Effect.runPromise,
+ * )
+ * ```
+ *
+ * @category models
+ * @since 0.1.0
  */
 export class HerdrConnection extends Context.Service<HerdrConnection, HerdrConnectionShape>()(
   "effect-herdr/HerdrConnection",
 ) {}
 
-/**
- * Verify the connection actually works by round-tripping `ping`. herdr's
- * socket has no handshake beyond TCP/unix-domain connect, so the only
- * reliable "is this a live herdr server" check is a real RPC call.
- */
+// Round-trips `ping` since herdr's socket has no handshake beyond connect.
 const verifyLive = (
   rpc: HerdrConnectionShape["rpc"],
   socketPath: string,
@@ -84,25 +91,30 @@ const verifyLive = (
 }
 
 /**
- * Scoped constructor. Advanced callers (case B — E2E harness) bracket
- * lifetime themselves. Fails at acquire time — checks the socket file
- * exists, builds the per-call-dial protocol, and round-trips `ping` to
- * prove liveness — before returning, per D3's "fail loud at Layer-build
- * time" requirement. No upfront persistent socket is opened (D4): each RPC
- * call, including this `ping`, dials its own connection internally.
+ * Scoped constructor for a herdr connection. Checks the socket file
+ * exists, builds the RPC transport, and round-trips `ping` to confirm the
+ * server is live — all before returning, so failures surface at
+ * acquisition time rather than on first use.
  *
- * `subscribeEvents` (issue #10/slice 9) closes over this call's own
- * `Scope.Scope` (captured once via `Effect.scope`, below) to satisfy the
- * "connection-scope teardown" requirement: every `subscribeEvents` call
- * forks a fresh CHILD scope of the connection's own scope for its
- * persistent socket + read loop (`Scope.fork` — closing the connection's
- * scope closes every such child automatically, per `Scope.fork`'s own
- * parent/child finalizer wiring), and additionally registers the
- * INDIVIDUAL caller's scope (via `Effect.scope` inside `subscribeEvents`
- * itself — the `Scope.Scope` its own signature requires) to close that
- * same child scope too. So either the connection's scope or the specific
- * caller's scope closing tears the subscription down — whichever comes
- * first.
+ * **Example** (explicit lifetime management)
+ *
+ * ```ts
+ * import { BunFileSystem } from "@effect/platform-bun"
+ * import { Effect } from "effect"
+ * import { HerdrConnection } from "effect-herdr"
+ *
+ * const program = Effect.scoped(
+ *   Effect.gen(function*() {
+ *     const connection = yield* HerdrConnection.make({ socketPath: "/tmp/herdr.sock" })
+ *     yield* connection.rpc["workspace.list"]()
+ *   }),
+ * )
+ *
+ * program.pipe(Effect.provide(BunFileSystem.layer), Effect.runPromise)
+ * ```
+ *
+ * @category constructors
+ * @since 0.1.0
  */
 export const make = (
   options: { readonly socketPath: string },
@@ -142,8 +154,22 @@ export const make = (
   })
 
 /**
- * Bring-your-own-config Layer form. Any `Scope` requirement from `make` is
- * absorbed into the layer's own scope by `Layer.effect`.
+ * Builds a `Layer` for a `HerdrConnection` from an explicit socket path.
+ *
+ * **Example** (bring-your-own socket path)
+ *
+ * ```ts
+ * import { BunFileSystem } from "@effect/platform-bun"
+ * import { Layer } from "effect"
+ * import { HerdrConnection } from "effect-herdr"
+ *
+ * const connectionLayer = HerdrConnection.layer({ socketPath: "/tmp/herdr.sock" }).pipe(
+ *   Layer.provide(BunFileSystem.layer),
+ * )
+ * ```
+ *
+ * @category constructors
+ * @since 0.1.0
  */
 export const layer = (
   options: { readonly socketPath: string },
@@ -151,9 +177,22 @@ export const layer = (
   Layer.effect(HerdrConnection, make(options))
 
 /**
- * Sound-defaults Layer (D3). Reads `HerdrSocketPathConfig` — env
- * `HERDR_SOCKET_PATH` then `~/.config/herdr/herdr.sock`. Fails at
- * Layer-build time if the resolved path has no live server.
+ * Sound-defaults `Layer` for a `HerdrConnection`. Resolves the socket path
+ * from `HerdrSocketPathConfig` and fails at layer-build time if no live
+ * server is found there.
+ *
+ * **Example** (connecting with defaults)
+ *
+ * ```ts
+ * import { BunFileSystem } from "@effect/platform-bun"
+ * import { Layer } from "effect"
+ * import { HerdrConnection } from "effect-herdr"
+ *
+ * const runtime = HerdrConnection.Live.pipe(Layer.provide(BunFileSystem.layer))
+ * ```
+ *
+ * @category constructors
+ * @since 0.1.0
  */
 export const Live: Layer.Layer<HerdrConnection, SocketFileMissing | ConnectionRefused | TransportOpenFailed, FileSystem> = Layer
   .unwrap(

@@ -21,6 +21,7 @@
  *      layout automatically since the tab drops back to 1 pane.
  */
 
+import { BunFileSystem } from "@effect/platform-bun"
 import { Effect, Option } from "effect"
 import { closePane, currentPane, HerdrSession, runInPane, splitPane } from "../packages/core/src/index.js"
 
@@ -49,7 +50,7 @@ const program = Effect.gen(function*() {
   yield* closePane(newPane)
 })
 
-Effect.runPromise(program.pipe(Effect.provide(HerdrSession.Live))).catch((error) => {
+Effect.runPromise(program.pipe(Effect.provide(HerdrSession.Live), Effect.provide(BunFileSystem.layer))).catch((error) => {
   console.error(error)
   process.exit(1)
 })
