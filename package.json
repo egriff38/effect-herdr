@@ -7,14 +7,22 @@
   ],
   "scripts": {
     "typecheck": "bun --filter '*' typecheck",
-    "test": "bun --filter '*' test",
+    "test": "bun --filter effect-herdr test",
     "test:e2e": "bun --filter effect-herdr-e2e test",
-    "schema:refresh": "herdr api schema --json > scripts/herdr-schema.json && echo 'refreshed scripts/herdr-schema.json'"
+    "test:all": "bun --filter '*' test",
+    "build": "bun --filter effect-herdr build",
+    "schema:refresh": "herdr api schema --json > scripts/herdr-schema.json && echo 'refreshed scripts/herdr-schema.json'",
+    "changeset": "changeset",
+    "version": "changeset version",
+    "release": "bun run build && changeset publish"
   },
   "devDependencies": {
+    "@changesets/cli": "^2.31.1",
     "@effect/platform-bun": "4.0.0-beta.74",
     "@types/bun": "latest",
     "effect": "4.0.0-beta.74",
+    "publint": "^0.3.21",
+    "tsdown": "^0.22.13",
     "typescript": "^5.6.0"
   }
 }

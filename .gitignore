@@ -1,7 +1,8 @@
 node_modules/
 dist/
-bun.lock*
 .DS_Store
 *.log
 .tmp/
 tmp/
+packages/core/LICENSE
+packages/core/README.md

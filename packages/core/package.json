@@ -1,17 +1,60 @@
 {
   "name": "effect-herdr",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
   "type": "module",
+  "description": "A typed Effect SDK for herdr, the terminal-native agent multiplexer.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/egriff38/effect-herdr.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/egriff38/effect-herdr#readme",
+  "bugs": {
+    "url": "https://github.com/egriff38/effect-herdr/issues"
+  },
+  "keywords": [
+    "effect",
+    "effect-ts",
+    "herdr",
+    "terminal",
+    "tmux",
+    "multiplexer",
+    "agent"
+  ],
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "src",
+    "LICENSE",
+    "README.md"
+  ],
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
   },
   "scripts": {
+    "prepack": "cp ../../LICENSE ./LICENSE && cp ../../README.md ./README.md && tsdown",
+    "build": "tsdown",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
-  "dependencies": {
-    "@effect/platform-node-shared": "4.0.0-beta.99",
+  "peerDependencies": {
     "effect": "4.0.0-beta.74"
+  },
+  "dependencies": {
+    "@effect/platform-node-shared": "4.0.0-beta.99"
+  },
+  "devDependencies": {
+    "effect": "4.0.0-beta.74",
+    "tsdown": "^0.22.13",
+    "publint": "^0.3.21"
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": "./dist/index.mjs",
+      "./package.json": "./package.json"
+    }
   }
 }

@@ -92,10 +92,20 @@ e.g. `@effect/platform-bun`'s `BunServices.layer`.
 ```bash
 bun install
 bun run typecheck
-bun run test            # unit + E2E (spins private herdr servers per test)
+bun run test            # unit tests, packages/core only
+bun run test:e2e        # E2E, spins private herdr servers per test
+bun run test:all        # both
 bun run schema:refresh  # re-capture scripts/herdr-schema.json after upgrading herdr
 ```
 
 The E2E suite shells out to a real `herdr` binary to spawn isolated
 named-session servers — the SDK-under-test is never in that bootstrap path.
 Requires [herdr](https://herdr.dev) on `PATH`.
+
+## Release
+
+Versioning and publishing go through
+[Changesets](https://github.com/changesets/changesets): run
+`bun run changeset` to describe a change, merge it, and CI opens a release
+PR that publishes to npm on merge. `bun run build` produces the published
+`dist/` output (ESM + `.d.ts`) via [tsdown](https://tsdown.dev).
