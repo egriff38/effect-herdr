@@ -26,7 +26,7 @@
  */
 
 import { Cause, Data, Deferred, Effect, Queue, Scope, Stream } from "effect"
-import * as NodeSocket from "@effect/platform-bun/BunSocket"
+import * as NodeSocket from "@effect/platform-node-shared/NodeSocket"
 import * as Socket from "effect/unstable/socket/Socket"
 import { HerdrProtocolError } from "./protocol/errors.js"
 

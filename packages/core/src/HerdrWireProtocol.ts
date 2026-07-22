@@ -26,7 +26,7 @@
  * @since 0.1.0
  */
 
-import * as NodeSocket from "@effect/platform-bun/BunSocket"
+import * as NodeSocket from "@effect/platform-node-shared/NodeSocket"
 import { Deferred, Effect } from "effect"
 import { RpcClient } from "effect/unstable/rpc"
 import { RpcClientError } from "effect/unstable/rpc/RpcClientError"
