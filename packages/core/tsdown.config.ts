@@ -5,11 +5,11 @@ export default defineConfig({
   format: ["esm"],
   platform: "node",
   target: "node20",
-  dts: true,
-  clean: true,
-  exports: {
-    devExports: true,
+  dts: {
+    sourcemap: true,
   },
+  sourcemap: true,
+  clean: true,
   publint: true,
   unbundle: true,
 })
