@@ -6,3 +6,4 @@ dist/
 tmp/
 packages/core/LICENSE
 packages/core/README.md
+*.tgz

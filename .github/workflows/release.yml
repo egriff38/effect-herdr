@@ -22,11 +22,14 @@ jobs:
           bun-version: latest
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           registry-url: "https://registry.npmjs.org"
+      - run: npm install -g npm@latest
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun run test
+      - name: Guard against re-publishing unchanged versions under OIDC
+        run: bash scripts/mark-published-private.sh
       - name: Create release PR or publish
         uses: changesets/action@v1
         with:
@@ -34,4 +37,3 @@ jobs:
           version: bun run version
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
