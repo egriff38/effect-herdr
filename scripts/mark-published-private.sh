@@ -37,3 +37,9 @@ for pkg_json in packages/*/package.json; do
     "
   fi
 done
+
+if ! git diff --quiet; then
+  git config user.name "github-actions[bot]"
+  git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+  git commit -am "chore: mark already-published packages private for this CI run [skip ci]"
+fi
