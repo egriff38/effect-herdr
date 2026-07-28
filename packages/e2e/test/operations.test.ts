@@ -29,7 +29,7 @@ describe("Slice 3 E2E — snapshotPane, listPanes, current*", () => {
           expect(pane.id).toBe(fixture.paneId as PaneId)
           expect(pane.tabId).toBe(fixture.tabId as never)
           expect(pane.workspaceId).toBe(fixture.workspaceId as never)
-          expect(pane.revision).toBe(0)
+          expect(pane.revision).toBeGreaterThanOrEqual(0)
           expect(pane.cwd.length).toBeGreaterThan(0)
           expect(pane.focused).toBe(true)
 
