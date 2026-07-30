@@ -1,6 +1,6 @@
 {
   "name": "effect-herdr",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "A typed Effect SDK for herdr, the terminal-native agent multiplexer.",
   "license": "MIT",
