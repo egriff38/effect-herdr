@@ -20,6 +20,7 @@ import * as HerdrSession from "../src/HerdrSession.js"
 import { currentPane, currentTab, currentWorkspace } from "../src/operations/current.js"
 import { activePane, activeTab, focusedPane, focusedTab, focusedWorkspace } from "../src/operations/focus.js"
 import { focusPane, listPanes, runInPane, snapshotPane, splitPane, waitForOutput } from "../src/operations/pane.js"
+import { makePane, makeTab, makeWorkspace } from "../src/protocol/schemas.js"
 import type { PaneId, TabId, WorkspaceId } from "../src/protocol/schemas.js"
 
 /**
@@ -78,6 +79,55 @@ const fakeConnectionLayer = (handlers: Handlers) =>
             "pane.read": handlers["pane.read"] ?? (() => Effect.die("pane.read not stubbed")),
             "pane.wait_for_output": handlers["pane.wait_for_output"]
               ?? (() => Effect.die("pane.wait_for_output not stubbed")),
+            "pane.rename": () => Effect.die("pane.rename not stubbed"),
+            "pane.send_keys": () => Effect.die("pane.send_keys not stubbed"),
+            "pane.move": () => Effect.die("pane.move not stubbed"),
+            "pane.swap": () => Effect.die("pane.swap not stubbed"),
+            "pane.resize": () => Effect.die("pane.resize not stubbed"),
+            "pane.zoom": () => Effect.die("pane.zoom not stubbed"),
+            "pane.focus_direction": () => Effect.die("pane.focus_direction not stubbed"),
+            "pane.neighbor": () => Effect.die("pane.neighbor not stubbed"),
+            "pane.edges": () => Effect.die("pane.edges not stubbed"),
+            "pane.current": () => Effect.die("pane.current not stubbed"),
+            "pane.layout": () => Effect.die("pane.layout not stubbed"),
+            "pane.process_info": () => Effect.die("pane.process_info not stubbed"),
+            "worktree.list": () => Effect.die("worktree.list not stubbed"),
+            "worktree.create": () => Effect.die("worktree.create not stubbed"),
+            "worktree.open": () => Effect.die("worktree.open not stubbed"),
+            "worktree.remove": () => Effect.die("worktree.remove not stubbed"),
+            "notification.show": () => Effect.die("notification.show not stubbed"),
+            "integration.install": () => Effect.die("integration.install not stubbed"),
+            "integration.uninstall": () => Effect.die("integration.uninstall not stubbed"),
+            "workspace.create": () => Effect.die("workspace.create not stubbed"),
+            "workspace.close": () => Effect.die("workspace.close not stubbed"),
+            "workspace.rename": () => Effect.die("workspace.rename not stubbed"),
+            "workspace.focus": () => Effect.die("workspace.focus not stubbed"),
+            "workspace.move": () => Effect.die("workspace.move not stubbed"),
+            "tab.create": () => Effect.die("tab.create not stubbed"),
+            "tab.close": () => Effect.die("tab.close not stubbed"),
+            "tab.rename": () => Effect.die("tab.rename not stubbed"),
+            "tab.focus": () => Effect.die("tab.focus not stubbed"),
+            "tab.move": () => Effect.die("tab.move not stubbed"),
+            "tab.list": () => Effect.die("tab.list not stubbed"),
+            "events.wait": () => Effect.die("events.wait not stubbed"),
+            "agent.list": () => Effect.die("agent.list not stubbed"),
+            "agent.get": () => Effect.die("agent.get not stubbed"),
+            "agent.read": () => Effect.die("agent.read not stubbed"),
+            "agent.explain": () => Effect.die("agent.explain not stubbed"),
+            "agent.rename": () => Effect.die("agent.rename not stubbed"),
+            "agent.focus": () => Effect.die("agent.focus not stubbed"),
+            "agent.start": () => Effect.die("agent.start not stubbed"),
+            "agent.send_keys": () => Effect.die("agent.send_keys not stubbed"),
+            "agent.prompt": () => Effect.die("agent.prompt not stubbed"),
+            "agent.wait": () => Effect.die("agent.wait not stubbed"),
+            "agent.view.set": () => Effect.die("agent.view.set not stubbed"),
+            "agent.view.clear": () => Effect.die("agent.view.clear not stubbed"),
+            "pane.report_agent": () => Effect.die("pane.report_agent not stubbed"),
+            "pane.report_agent_session": () => Effect.die("pane.report_agent_session not stubbed"),
+            "pane.report_metadata": () => Effect.die("pane.report_metadata not stubbed"),
+            "workspace.report_metadata": () => Effect.die("workspace.report_metadata not stubbed"),
+            "pane.release_agent": () => Effect.die("pane.release_agent not stubbed"),
+            "pane.clear_agent_authority": () => Effect.die("pane.clear_agent_authority not stubbed"),
           }),
         ),
       )
@@ -190,7 +240,7 @@ describe("operations/pane", () => {
   test("listPanes decodes every entry from pane.list into PaneSnapshots", async () => {
     const result = await Effect.runPromise(
       Effect.scoped(
-        listPanes({ id: "w1" as WorkspaceId }).pipe(
+        listPanes(makeWorkspace({ id: "w1" as WorkspaceId })).pipe(
           Effect.provide(HerdrSession.layer),
           Effect.provide(
             fakeConnectionLayer({
@@ -235,7 +285,7 @@ describe("operations/pane", () => {
   })
 
   test("splitPane dual-shape: data-first and data-last dispatch identical pane.split calls", async () => {
-    const original = { id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }
+    const original = makePane({ id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId })
     const wireNewPane = {
       pane_id: "w1:p2",
       tab_id: "w1:t1",
@@ -250,7 +300,7 @@ describe("operations/pane", () => {
       expect(p.direction).toBe("right")
       return Effect.succeed(new PaneInfoResult({ type: "pane_info", pane: wireNewPane }))
     }
-    const expected = { id: "w1:p2" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }
+    const expected = makePane({ id: "w1:p2" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId })
 
     const dataFirst = await Effect.runPromise(
       Effect.scoped(
@@ -276,7 +326,7 @@ describe("operations/pane", () => {
   test("splitPane defaults direction to right and omits focus when not provided", async () => {
     await Effect.runPromise(
       Effect.scoped(
-        splitPane({ id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }).pipe(
+        splitPane(makePane({ id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId })).pipe(
           Effect.provide(HerdrSession.layer),
           Effect.provide(
             fakeConnectionLayer({
@@ -309,7 +359,7 @@ describe("operations/pane", () => {
     let dispatchedId: string | undefined
     await Effect.runPromise(
       Effect.scoped(
-        focusPane({ id: "w1:p2" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }).pipe(
+        focusPane(makePane({ id: "w1:p2" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId })).pipe(
           Effect.provide(HerdrSession.layer),
           Effect.provide(
             fakeConnectionLayer({
@@ -344,7 +394,7 @@ describe("operations/pane", () => {
     await Effect.runPromise(
       Effect.scoped(
         runInPane(
-          { id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId },
+          makePane({ id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }),
           "echo hello",
         ).pipe(
           Effect.provide(HerdrSession.layer),
@@ -365,7 +415,7 @@ describe("operations/pane", () => {
   })
 
   test("runInPane dual-shape: data-first and data-last dispatch identical pane.send_text calls", async () => {
-    const pane = { id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }
+    const pane = makePane({ id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId })
     const dispatchedDataFirst: Array<{ readonly pane_id: string; readonly text: string }> = []
     const dispatchedDataLast: Array<{ readonly pane_id: string; readonly text: string }> = []
 
@@ -407,7 +457,7 @@ describe("operations/pane", () => {
   test("runInPane propagates a HerdrProtocolError from pane.send_text (not silently discarded)", async () => {
     const result = await Effect.runPromiseExit(
       Effect.scoped(
-        runInPane({ id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }, "echo hi").pipe(
+        runInPane(makePane({ id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }), "echo hi").pipe(
           Effect.provide(HerdrSession.layer),
           Effect.provide(
             fakeConnectionLayer({
@@ -423,7 +473,7 @@ describe("operations/pane", () => {
   })
 
   test("streaming runInPane dispatches one pane.send_text per chunk, in order, verbatim (no newline appended)", async () => {
-    const pane = { id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }
+    const pane = makePane({ id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId })
     const dispatched: Array<{ readonly pane_id: string; readonly text: string }> = []
 
     await Effect.runPromise(
@@ -450,7 +500,7 @@ describe("operations/pane", () => {
   })
 
   test("streaming runInPane dual-shape: data-first and data-last dispatch identical pane.send_text call sequences", async () => {
-    const pane = { id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }
+    const pane = makePane({ id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId })
     const dispatchedDataFirst: Array<{ readonly pane_id: string; readonly text: string }> = []
     const dispatchedDataLast: Array<{ readonly pane_id: string; readonly text: string }> = []
 
@@ -495,7 +545,7 @@ describe("operations/pane", () => {
   test("streaming runInPane propagates a tagged stream error mid-stream (not swallowed alongside HerdrProtocolError)", async () => {
     class MyStreamError extends Data.TaggedError("MyStreamError")<{ readonly reason: string }> {}
 
-    const pane = { id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }
+    const pane = makePane({ id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId })
     const dispatched: Array<string> = []
     const failingStream = Stream.concat(
       Stream.make("chunk-1", "chunk-2"),
@@ -526,7 +576,7 @@ describe("operations/pane", () => {
   })
 
   test("waitForOutput emits the matched_line from a successful pane.wait_for_output reply", async () => {
-    const pane = { id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }
+    const pane = makePane({ id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId })
     let dispatched:
       | {
         readonly pane_id: string
@@ -578,7 +628,7 @@ describe("operations/pane", () => {
   })
 
   test("waitForOutput sends a regex match when options.regex is true, and forwards timeout_ms", async () => {
-    const pane = { id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }
+    const pane = makePane({ id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId })
     let dispatchedMatch: { readonly type: string; readonly value: string } | undefined
     let dispatchedTimeout: number | undefined
 
@@ -622,7 +672,7 @@ describe("operations/pane", () => {
   })
 
   test("waitForOutput maps a timeout-coded HerdrProtocolError to WaitError({ reason: \"timeout\" })", async () => {
-    const pane = { id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }
+    const pane = makePane({ id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId })
 
     const result = await Effect.runPromiseExit(
       Effect.scoped(
@@ -648,7 +698,7 @@ describe("operations/pane", () => {
   })
 
   test("waitForOutput propagates a non-timeout HerdrProtocolError unchanged", async () => {
-    const pane = { id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }
+    const pane = makePane({ id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId })
 
     const result = await Effect.runPromiseExit(
       Effect.scoped(
@@ -673,7 +723,7 @@ describe("operations/pane", () => {
   })
 
   test("waitForOutput dual-shape: data-first and data-last dispatch identical pane.wait_for_output calls", async () => {
-    const pane = { id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }
+    const pane = makePane({ id: "w1:p1" as PaneId, tabId: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId })
     const wireResult = new PaneWaitForOutputResult({
       type: "output_matched",
       pane_id: "w1:p1",
@@ -722,7 +772,7 @@ describe("operations/focus", () => {
 
     const result = await Effect.runPromise(
       Effect.scoped(
-        activePane({ id: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId }).pipe(
+        activePane(makeTab({ id: "w1:t1" as TabId, workspaceId: "w1" as WorkspaceId })).pipe(
           Effect.provide(HerdrSession.layer),
           Effect.provide(
             fakeConnectionLayer({
@@ -780,7 +830,7 @@ describe("operations/focus", () => {
 
     const result = await Effect.runPromise(
       Effect.scoped(
-        activePane({ id: "w1" as WorkspaceId }).pipe(
+        activePane(makeWorkspace({ id: "w1" as WorkspaceId })).pipe(
           Effect.provide(HerdrSession.layer),
           Effect.provide(
             fakeConnectionLayer({
@@ -851,7 +901,7 @@ describe("operations/focus", () => {
   test("activeTab dispatches workspace.get -> tab.get and decodes a TabSnapshot", async () => {
     const result = await Effect.runPromise(
       Effect.scoped(
-        activeTab({ id: "w1" as WorkspaceId }).pipe(
+        activeTab(makeWorkspace({ id: "w1" as WorkspaceId })).pipe(
           Effect.provide(HerdrSession.layer),
           Effect.provide(
             fakeConnectionLayer({

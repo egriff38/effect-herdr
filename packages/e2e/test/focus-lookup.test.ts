@@ -4,6 +4,7 @@ import { Effect, Option } from "effect"
 import { HerdrConnection, HerdrSession } from "effect-herdr"
 import { activePane, focusedPane } from "effect-herdr"
 import { focusPane, splitPane } from "effect-herdr"
+import { makePane, makeTab, makeWorkspace } from "effect-herdr"
 import type { Pane, PaneId, TabId, WorkspaceId } from "effect-herdr"
 import { acquire, createWorkspaceFixture } from "../src/HerdrTestServer.js"
 
@@ -26,15 +27,15 @@ describe("Slice 8 E2E — activePane, focusedPane", () => {
           const withConnection = Effect.provideService(HerdrConnection.HerdrConnection, connection)
           const withSession = Effect.provide(HerdrSession.layer)
 
-          const original: Pane = {
+          const original: Pane = makePane({
             id: fixture.paneId as PaneId,
             tabId: fixture.tabId as TabId,
             workspaceId: fixture.workspaceId as WorkspaceId,
-          }
+          })
           const newPane = yield* splitPane(original, { direction: "right" }).pipe(withSession, withConnection)
           yield* focusPane(newPane).pipe(withSession, withConnection)
 
-          const active = yield* activePane({ id: fixture.workspaceId as WorkspaceId }).pipe(
+          const active = yield* activePane(makeWorkspace({ id: fixture.workspaceId as WorkspaceId })).pipe(
             withSession,
             withConnection,
           )
@@ -54,15 +55,15 @@ describe("Slice 8 E2E — activePane, focusedPane", () => {
           const withConnection = Effect.provideService(HerdrConnection.HerdrConnection, connection)
           const withSession = Effect.provide(HerdrSession.layer)
 
-          const original: Pane = {
+          const original: Pane = makePane({
             id: fixture.paneId as PaneId,
             tabId: fixture.tabId as TabId,
             workspaceId: fixture.workspaceId as WorkspaceId,
-          }
+          })
           const newPane = yield* splitPane(original, { direction: "down" }).pipe(withSession, withConnection)
           yield* focusPane(newPane).pipe(withSession, withConnection)
 
-          const active = yield* activePane({ id: fixture.tabId as TabId, workspaceId: fixture.workspaceId as WorkspaceId })
+          const active = yield* activePane(makeTab({ id: fixture.tabId as TabId, workspaceId: fixture.workspaceId as WorkspaceId }))
             .pipe(withSession, withConnection)
           expect(active.id).toBe(newPane.id)
           expect(active.focused).toBe(true)
@@ -80,11 +81,11 @@ describe("Slice 8 E2E — activePane, focusedPane", () => {
           const withConnection = Effect.provideService(HerdrConnection.HerdrConnection, connection)
           const withSession = Effect.provide(HerdrSession.layer)
 
-          const original: Pane = {
+          const original: Pane = makePane({
             id: fixture.paneId as PaneId,
             tabId: fixture.tabId as TabId,
             workspaceId: fixture.workspaceId as WorkspaceId,
-          }
+          })
           const newPane = yield* splitPane(original, { direction: "right" }).pipe(withSession, withConnection)
           yield* focusPane(newPane).pipe(withSession, withConnection)
 

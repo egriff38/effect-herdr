@@ -3,6 +3,7 @@ import { runTest, runTestExit } from "./testRuntime.js"
 import { Effect } from "effect"
 import { HerdrConnection, HerdrSession } from "effect-herdr"
 import { focusPane, listPanes, snapshotPane, splitPane } from "effect-herdr"
+import { makePane, makeWorkspace } from "effect-herdr"
 import type { Pane, PaneId, TabId, WorkspaceId } from "effect-herdr"
 import { acquire, createWorkspaceFixture } from "../src/HerdrTestServer.js"
 
@@ -21,18 +22,18 @@ describe("Slice 4 E2E — splitPane, focusPane", () => {
           const withConnection = Effect.provideService(HerdrConnection.HerdrConnection, connection)
           const withSession = Effect.provide(HerdrSession.layer)
 
-          const original: Pane = {
+          const original: Pane = makePane({
             id: fixture.paneId as PaneId,
             tabId: fixture.tabId as TabId,
             workspaceId: fixture.workspaceId as WorkspaceId,
-          }
+          })
 
           const newPane = yield* splitPane(original, { direction: "right" }).pipe(withSession, withConnection)
           expect(newPane.id).not.toBe(fixture.paneId as PaneId)
           expect(newPane.tabId).toBe(fixture.tabId as never)
           expect(newPane.workspaceId).toBe(fixture.workspaceId as never)
 
-          const panes = yield* listPanes({ id: fixture.workspaceId as WorkspaceId }).pipe(withSession, withConnection)
+          const panes = yield* listPanes(makeWorkspace({ id: fixture.workspaceId as WorkspaceId })).pipe(withSession, withConnection)
           expect(panes).toHaveLength(2)
         }),
       )
@@ -48,11 +49,11 @@ describe("Slice 4 E2E — splitPane, focusPane", () => {
           const withConnection = Effect.provideService(HerdrConnection.HerdrConnection, connection)
           const withSession = Effect.provide(HerdrSession.layer)
 
-          const original: Pane = {
+          const original: Pane = makePane({
             id: fixture.paneId as PaneId,
             tabId: fixture.tabId as TabId,
             workspaceId: fixture.workspaceId as WorkspaceId,
-          }
+          })
           const newPane = yield* splitPane(original, { direction: "right" }).pipe(withSession, withConnection)
 
           yield* focusPane(newPane).pipe(withSession, withConnection)

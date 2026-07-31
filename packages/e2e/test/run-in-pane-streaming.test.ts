@@ -3,6 +3,7 @@ import { runTest, runTestExit } from "./testRuntime.js"
 import { Effect, Stream } from "effect"
 import { HerdrConnection, HerdrSession } from "effect-herdr"
 import { runInPane, waitForOutput } from "effect-herdr"
+import { makePane } from "effect-herdr"
 import type { PaneId, TabId, WorkspaceId } from "effect-herdr"
 import { acquire, createWorkspaceFixture } from "../src/HerdrTestServer.js"
 
@@ -25,11 +26,11 @@ describe("Slice 7 E2E — runInPane streaming", () => {
           const withConnection = Effect.provideService(HerdrConnection.HerdrConnection, connection)
           const withSession = Effect.provide(HerdrSession.layer)
 
-          const pane = {
+          const pane = makePane({
             id: fixture.paneId as PaneId,
             tabId: fixture.tabId as TabId,
             workspaceId: fixture.workspaceId as WorkspaceId,
-          }
+          })
 
           yield* runInPane(pane, Stream.make("echo hello ", "world", "\n")).pipe(withSession, withConnection)
 
@@ -56,11 +57,11 @@ describe("Slice 7 E2E — runInPane streaming", () => {
           const withConnection = Effect.provideService(HerdrConnection.HerdrConnection, connection)
           const withSession = Effect.provide(HerdrSession.layer)
 
-          const pane = {
+          const pane = makePane({
             id: fixture.paneId as PaneId,
             tabId: fixture.tabId as TabId,
             workspaceId: fixture.workspaceId as WorkspaceId,
-          }
+          })
 
           yield* runInPane(pane, Stream.make("no-newline-here")).pipe(withSession, withConnection)
 

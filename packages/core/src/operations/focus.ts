@@ -27,33 +27,33 @@ import type {
   WorkspaceId,
   WorkspaceSnapshot,
 } from "../protocol/schemas.js"
+import { isTab, makeTab, makeWorkspace } from "../protocol/schemas.js"
 import { snapshotPane } from "./pane.js"
 
-// `Tab` has a `workspaceId` field, `Workspace` does not — the runtime discriminant for `activePane`'s sum-typed argument.
-const isTab = (parent: Tab | Workspace): parent is Tab => "workspaceId" in parent
-
 const decodeTabSnapshot = (wire: TabInfoWire): Effect.Effect<TabSnapshot> =>
-  Effect.map(DateTime.now, (capturedAt) => ({
-    id: wire.tab_id as TabId,
-    workspaceId: wire.workspace_id as WorkspaceId,
-    label: wire.label,
-    focused: wire.focused,
-    paneCount: wire.pane_count,
-    agentStatus: wire.agent_status,
-    capturedAt,
-  }))
+  Effect.map(DateTime.now, (capturedAt) =>
+    makeTab({
+      id: wire.tab_id as TabId,
+      workspaceId: wire.workspace_id as WorkspaceId,
+      label: wire.label,
+      focused: wire.focused,
+      paneCount: wire.pane_count,
+      agentStatus: wire.agent_status,
+      capturedAt,
+    }))
 
 const decodeWorkspaceSnapshot = (wire: WorkspaceInfoWire): Effect.Effect<WorkspaceSnapshot> =>
-  Effect.map(DateTime.now, (capturedAt) => ({
-    id: wire.workspace_id as WorkspaceId,
-    label: wire.label,
-    activeTabId: wire.active_tab_id as TabId,
-    focused: wire.focused,
-    tabCount: wire.tab_count,
-    paneCount: wire.pane_count,
-    agentStatus: wire.agent_status,
-    capturedAt,
-  }))
+  Effect.map(DateTime.now, (capturedAt) =>
+    makeWorkspace({
+      id: wire.workspace_id as WorkspaceId,
+      label: wire.label,
+      activeTabId: wire.active_tab_id as TabId,
+      focused: wire.focused,
+      tabCount: wire.tab_count,
+      paneCount: wire.pane_count,
+      agentStatus: wire.agent_status,
+      capturedAt,
+    }))
 
 // Per-container active-child
 

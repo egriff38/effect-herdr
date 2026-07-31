@@ -3,6 +3,7 @@ import { runTest, runTestExit } from "./testRuntime.js"
 import { Effect } from "effect"
 import { HerdrConnection, HerdrSession } from "effect-herdr"
 import { runInPane } from "effect-herdr"
+import { makePane } from "effect-herdr"
 import type { PaneId, TabId, WorkspaceId } from "effect-herdr"
 import { acquire, createWorkspaceFixture } from "../src/HerdrTestServer.js"
 
@@ -32,11 +33,11 @@ describe("Slice 5 E2E — runInPane", () => {
           const withConnection = Effect.provideService(HerdrConnection.HerdrConnection, connection)
           const withSession = Effect.provide(HerdrSession.layer)
 
-          const pane = {
+          const pane = makePane({
             id: fixture.paneId as PaneId,
             tabId: fixture.tabId as TabId,
             workspaceId: fixture.workspaceId as WorkspaceId,
-          }
+          })
 
           yield* runInPane(pane, "echo run-in-pane-e2e-marker").pipe(withSession, withConnection)
 
@@ -63,11 +64,11 @@ describe("Slice 5 E2E — runInPane", () => {
           const withConnection = Effect.provideService(HerdrConnection.HerdrConnection, connection)
           const withSession = Effect.provide(HerdrSession.layer)
 
-          const pane = {
+          const pane = makePane({
             id: fixture.paneId as PaneId,
             tabId: fixture.tabId as TabId,
             workspaceId: fixture.workspaceId as WorkspaceId,
-          }
+          })
 
           yield* Effect.succeed(pane).pipe(
             Effect.andThen(runInPane("echo data-last-marker")),
