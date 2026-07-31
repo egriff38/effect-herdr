@@ -9,6 +9,19 @@
  * pattern (`focusedPaneRef` in `focus.ts`) exists only for the
  * live-updating case, which `events.wait`'s one-shot semantics don't need.
  *
+ * **Server-side limitation.** herdr 0.7.5 (protocol 17, still true on
+ * protocol 18) implements exactly one of the 19 `EventMatch` variants its
+ * own schema advertises. Only `pane_agent_status_changed` is accepted; every
+ * other variant is rejected immediately with
+ * `HerdrProtocolError { code: "unsupported_event_wait_match" }`. The type
+ * admits all 19 because `EventMatch` mirrors herdr's published schema
+ * field-for-field, so this is a runtime failure, not a compile-time one.
+ * Tracked upstream as herdrdev/herdr#2116; see `TODO.md` §2.
+ *
+ * For close events specifically, use `claim`/`withClaim` in
+ * `operations/claim.ts` — they watch `HerdrConnection.subscribeEvents`, which
+ * does deliver `workspace_closed`/`tab_closed`/`pane_closed`.
+ *
  * @since 0.1.0
  */
 
@@ -55,24 +68,31 @@ export interface EventWaitOptions {
  * wire-level stream. herdr's own `timeout_ms` is the sole timeout
  * mechanism; a timeout reply is mapped to `WaitError({ reason: "timeout" })`.
  *
- * **Example** (waiting for a workspace to close)
+ * Only `pane_agent_status_changed` matches are accepted by herdr today — see
+ * this module's header. Any other variant fails with
+ * `HerdrProtocolError { code: "unsupported_event_wait_match" }`.
+ *
+ * **Example** (waiting for a pane's agent to go idle)
  *
  * ```ts
  * import { Effect, Stream } from "effect"
  * import { HerdrSession, waitForEvent } from "effect-herdr"
- * import type { WorkspaceId } from "effect-herdr"
+ * import type { PaneId } from "effect-herdr"
  *
- * const program = (workspaceId: WorkspaceId) =>
+ * const program = (paneId: PaneId) =>
  *   Effect.gen(function*() {
  *     const event = yield* waitForEvent(
- *       { event: "workspace_closed", workspace_id: workspaceId },
+ *       { event: "pane_agent_status_changed", pane_id: paneId, agent_status: "idle" },
  *       { timeout: "30 seconds" },
  *     ).pipe(Stream.runHead)
  *     yield* Effect.log(event)
  *   })
  *
- * program("w1" as WorkspaceId).pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * program("w1:t1:p1" as PaneId).pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
  * ```
+ *
+ * To wait for a workspace/tab/pane *close*, use `claim`/`withClaim` instead —
+ * `events.wait` cannot express it.
  *
  * @category combinators
  * @since 0.1.0
