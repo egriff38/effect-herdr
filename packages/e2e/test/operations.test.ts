@@ -3,6 +3,7 @@ import { runTest, runTestExit } from "./testRuntime.js"
 import { Effect, Option } from "effect"
 import { HerdrConnection, HerdrSession } from "effect-herdr"
 import { currentPane, currentTab, currentWorkspace, listPanes, snapshotPane } from "effect-herdr"
+import { makeWorkspace } from "effect-herdr"
 import type { PaneId, WorkspaceId } from "effect-herdr"
 import { acquire, createWorkspaceFixture } from "../src/HerdrTestServer.js"
 
@@ -33,7 +34,7 @@ describe("Slice 3 E2E — snapshotPane, listPanes, current*", () => {
           expect(pane.cwd.length).toBeGreaterThan(0)
           expect(pane.focused).toBe(true)
 
-          const panes = yield* listPanes({ id: fixture.workspaceId as WorkspaceId }).pipe(withSession, withConnection)
+          const panes = yield* listPanes(makeWorkspace({ id: fixture.workspaceId as WorkspaceId })).pipe(withSession, withConnection)
           expect(panes).toHaveLength(1)
           expect(panes[0]?.id).toBe(fixture.paneId as PaneId)
         }),

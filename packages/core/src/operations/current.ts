@@ -20,6 +20,7 @@ import type { RpcClientError } from "effect/unstable/rpc/RpcClientError"
 import { HerdrSession } from "../HerdrSession.js"
 import type { HerdrProtocolError } from "../protocol/errors.js"
 import type { PaneSnapshot, TabId, TabSnapshot, WorkspaceId, WorkspaceSnapshot } from "../protocol/schemas.js"
+import { makeTab, makeWorkspace } from "../protocol/schemas.js"
 import { snapshotPane } from "./pane.js"
 
 /**
@@ -85,7 +86,7 @@ export const currentTab: Effect.Effect<
   if (Option.isNone(session.currentIds)) return Option.none()
   const result = yield* session.rpc["tab.get"]({ tab_id: session.currentIds.value.tabId })
   const capturedAt = yield* DateTime.now
-  return Option.some<TabSnapshot>({
+  return Option.some<TabSnapshot>(makeTab({
     id: result.tab.tab_id as TabId,
     workspaceId: result.tab.workspace_id as WorkspaceId,
     label: result.tab.label,
@@ -93,7 +94,7 @@ export const currentTab: Effect.Effect<
     paneCount: result.tab.pane_count,
     agentStatus: result.tab.agent_status,
     capturedAt,
-  })
+  }))
 })
 
 /**
@@ -126,7 +127,7 @@ export const currentWorkspace: Effect.Effect<
   if (Option.isNone(session.currentIds)) return Option.none()
   const result = yield* session.rpc["workspace.get"]({ workspace_id: session.currentIds.value.workspaceId })
   const capturedAt = yield* DateTime.now
-  return Option.some<WorkspaceSnapshot>({
+  return Option.some<WorkspaceSnapshot>(makeWorkspace({
     id: result.workspace.workspace_id as WorkspaceId,
     label: result.workspace.label,
     activeTabId: result.workspace.active_tab_id as TabId,
@@ -135,5 +136,42 @@ export const currentWorkspace: Effect.Effect<
     paneCount: result.workspace.pane_count,
     agentStatus: result.workspace.agent_status,
     capturedAt,
-  })
+  }))
 })
+
+/**
+ * Resolves an arbitrary pane's identity server-side, without relying on
+ * `HERDR_PANE_ID`. Distinct from `currentPane`: `currentPane` resolves
+ * from the env var directly with no RPC round-trip, and answers "what
+ * pane launched this program"; `currentPaneById` always round-trips
+ * through `pane.current` and serves case-B callers with no herdr-managed
+ * env var of their own, passing an explicit `callerPaneId`. Omitting
+ * `callerPaneId` asks herdr to resolve its own notion of "current" for
+ * the connection, which may differ from this SDK's env-based resolution.
+ *
+ * **Example** (resolving an explicit caller pane)
+ *
+ * ```ts
+ * import { Effect } from "effect"
+ * import { HerdrSession, currentPaneById } from "effect-herdr"
+ * import type { PaneId } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const pane = yield* currentPaneById("w1:t1:p1" as PaneId)
+ *   yield* Effect.log(pane.cwd)
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
+export const currentPaneById = (
+  callerPaneId?: string,
+): Effect.Effect<PaneSnapshot, HerdrProtocolError | RpcClientError, HerdrSession> =>
+  Effect.gen(function*() {
+    const session = yield* HerdrSession
+    const result = yield* session.rpc["pane.current"]({ caller_pane_id: callerPaneId })
+    return yield* snapshotPane({ id: result.pane.pane_id as PaneSnapshot["id"] })
+  })

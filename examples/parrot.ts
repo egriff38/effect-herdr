@@ -32,11 +32,7 @@ const program = Effect.gen(function*() {
     return
   }
 
-  const original = {
-    id: current.value.id,
-    tabId: current.value.tabId,
-    workspaceId: current.value.workspaceId,
-  }
+  const original = current.value
 
   yield* Effect.logInfo(`splitting from pane ${original.id}`)
   const newPane = yield* splitPane(original, { direction: "right" })
