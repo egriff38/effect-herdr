@@ -395,12 +395,15 @@ export class PaneProcessInfoResult extends Schema.Class<PaneProcessInfoResult>("
 export class WorktreeInfoWire extends Schema.Class<WorktreeInfoWire>("WorktreeInfoWire")({
   path: Schema.String,
   label: Schema.String,
-  branch: Schema.NullOr(Schema.String),
+  // Schema-OPTIONAL, not merely nullable: herdr omits these keys entirely for
+  // a detached/unopened worktree, so `NullOr` alone fails decode on the key
+  // being absent.
+  branch: Schema.optional(Schema.NullOr(Schema.String)),
   is_bare: Schema.Boolean,
   is_detached: Schema.Boolean,
   is_linked_worktree: Schema.Boolean,
   is_prunable: Schema.Boolean,
-  open_workspace_id: Schema.NullOr(Schema.String),
+  open_workspace_id: Schema.optional(Schema.NullOr(Schema.String)),
 }) {}
 
 /** herdr's `WorktreeSourceInfo` — the repo metadata scoping a `worktree.list` query. */
@@ -849,6 +852,18 @@ export class AgentStartedResult extends Schema.Class<AgentStartedResult>("AgentS
   argv: Schema.Array(Schema.String),
 }) {}
 
+/**
+ * Decodes `agent.prompt`'s reply. herdr echoes the prompted agent's state as
+ * `{type:"agent_prompted", agent}` — NOT a bare `ok`, which is what this was
+ * originally (and wrongly) declared as, making every `promptAgent` call fail
+ * schema decode. Mirrors `schemas.success_response.$defs.ResponseResult`'s
+ * `agent_prompted` variant.
+ */
+export class AgentPromptedResult extends Schema.Class<AgentPromptedResult>("AgentPromptedResult")({
+  type: Schema.Literal("agent_prompted"),
+  agent: AgentInfoWire,
+}) {}
+
 /** Decodes `agent.explain`'s reply. `explain`'s shape is deliberately untyped debug output — decoded as `unknown`. */
 export class AgentExplainResult extends Schema.Class<AgentExplainResult>("AgentExplainResult")({
   type: Schema.Literal("agent_explain"),
@@ -867,10 +882,6 @@ export class AgentViewResult extends Schema.Class<AgentViewResult>("AgentViewRes
  * `agent.view.set`'s `filter` payload — a recursive boolean-combinator
  * tree over field comparisons (`all`/`any`/`not`/`eq`/`exists`/`in`).
  * Passed through untyped: #18's resolution explicitly deferred fully
- * specing this filter DSL to implementation time, and this effect
- * version's `Schema` has no `suspend`/recursive-schema combinator to
- * model the self-referential `all`/`any`/`not` variants type-safely.
- * Callers build the filter object by hand against herdr's documented
  * shape; the SDK validates only that it's a plain object.
  *
  * @category models
@@ -878,11 +889,29 @@ export class AgentViewResult extends Schema.Class<AgentViewResult>("AgentViewRes
  */
 export const AgentViewFilter = Schema.Record(Schema.String, Schema.Unknown)
 
-/** `agent.view.set`'s `sort` payload — one sort key and direction. */
-export class AgentViewSortWire extends Schema.Class<AgentViewSortWire>("AgentViewSortWire")({
+/**
+ * `agent.view.set`'s `sort` payload — one sort key and direction.
+ *
+ * A plain `Schema.Struct`, deliberately not a `Schema.Class`: this is an
+ * outbound *payload* field, so callers pass object literals. A class here
+ * requires `instanceof` on encode and rejects `{ field, order }` with
+ * "Expected AgentViewSortWire", which made every `sort` call fail at runtime.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export const AgentViewSortWire = Schema.Struct({
   field: Schema.String,
   order: Schema.optional(Schema.Literals(["asc", "desc"])),
-}) {}
+})
+
+/**
+ * The decoded type of {@link AgentViewSortWire}.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type AgentViewSortWire = typeof AgentViewSortWire.Type
 
 // =============================================================================
 // Self-reporting agent-state wire schemas — #23
@@ -1402,7 +1431,7 @@ export const HerdrRpcs = RpcGroup.make(
         timeout_ms: Schema.optional(Schema.NullOr(Schema.Number)),
       }))),
     },
-    success: OkResult,
+    success: AgentPromptedResult,
     error: HerdrProtocolError,
   }),
   /** Blocks until an agent reaches one of `until`'s statuses, or `timeout_ms` elapses — a plain request/reply, not a subscription. */

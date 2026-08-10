@@ -568,7 +568,7 @@ export const setAgentView = (
       source,
       filter: options?.filter,
       label: options?.label,
-      sort: options?.sort as Array<AgentViewSortWire> | undefined,
+      sort: options?.sort,
     })
     return { active: result.active }
   })

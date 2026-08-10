@@ -86,7 +86,7 @@ bun run examples/parrot.ts   # run from inside a herdr pane
 
 Not every herdr RPC method has an ergonomic wrapper yet — see
 [`TODO.md`](./TODO.md) for the coverage gap and other known limitations
-(PTY control-key input, real-time pane-output tailing).
+(real-time pane-output tailing, `pane.send_input`'s combined text+keys form).
 
 ## Platform runtime
 

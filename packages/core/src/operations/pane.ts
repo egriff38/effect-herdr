@@ -759,9 +759,14 @@ export const paneNeighbor: {
     Effect.gen(function*() {
       const session = yield* HerdrSession
       const result = yield* session.rpc["pane.neighbor"]({ pane_id: pane.id, direction })
-      return Option.fromNullOr(result.neighbor.neighbor_pane_id).pipe(
-        Option.map((id) => id as PaneId),
-      )
+      // `neighbor_pane_id` is schema-OPTIONAL, so herdr may omit the key
+      // entirely — which decodes to `undefined`, and `Option.fromNullOr` maps
+      // only `null` to `None`, turning "no neighbor" into `Some(undefined)`.
+      // Check both absences explicitly.
+      const neighborId = result.neighbor.neighbor_pane_id
+      return neighborId === null || neighborId === undefined
+        ? Option.none<PaneId>()
+        : Option.some(neighborId as PaneId)
     }),
 )
 

@@ -35,12 +35,15 @@ const decodeWorktreeSnapshot = (wire: WorktreeInfoWire): Effect.Effect<WorktreeS
   Effect.map(DateTime.now, (capturedAt) => ({
     path: wire.path,
     label: wire.label,
-    branch: Option.fromNullOr(wire.branch),
+    // `fromNullishOr`, not `fromNullOr`: these keys are schema-optional and
+    // decode to `undefined` when herdr omits them, which `fromNullOr` would
+    // turn into `Some(undefined)`.
+    branch: Option.fromNullishOr(wire.branch),
     isBare: wire.is_bare,
     isDetached: wire.is_detached,
     isLinkedWorktree: wire.is_linked_worktree,
     isPrunable: wire.is_prunable,
-    openWorkspaceId: Option.fromNullOr(wire.open_workspace_id) as Option.Option<WorkspaceId>,
+    openWorkspaceId: Option.fromNullishOr(wire.open_workspace_id) as Option.Option<WorkspaceId>,
     capturedAt,
   }))
 

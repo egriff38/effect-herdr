@@ -5,7 +5,7 @@ its covered surface — they're the next things worth building.
 
 ## 1. Full herdr RPC coverage
 
-herdr's socket protocol has 85 methods (`scripts/herdr-schema.json`,
+herdr's socket protocol has 89 methods (`scripts/herdr-schema.json`,
 protocol v17). This SDK now wires up 62:
 
 ```
@@ -44,10 +44,13 @@ there's no ergonomic combinator. Remaining gaps, per the wayfinder map
   concrete caller yet to pin down the `placement`/format shape.
 - **`AgentViewFilter`'s filter DSL** (`all`/`any`/`not`/`eq`/`exists`/`in`,
   used by `agent.view.set`) is wired as an untyped passthrough
-  (`Record<string, unknown>`), not a properly modeled recursive schema —
-  this effect version (`4.0.0-beta.74`) has no `Schema.suspend`/recursive-
-  schema combinator to model the self-referential `all`/`any`/`not`
-  variants type-safely. Revisit if/when the effect dependency updates.
+  (`Record<string, unknown>`), not a properly modeled recursive schema. This
+  was originally attributed to the effect version lacking a recursive-schema
+  combinator, which is **wrong** — `Schema.suspend` exists in
+  `4.0.0-beta.74` (`Schema.d.ts:3513`). Modeling the self-referential
+  `all`/`any`/`not` variants is straightforward and simply hasn't been done;
+  the only real question is how faithfully to type the leaf comparisons
+  (`eq`/`exists`/`in`), whose value side is genuinely heterogeneous.
 - **Plugins**: the entire `plugin.*` namespace (out of scope per issue #1's
   "v2 case A" deferral — plugins are a v2 concept, not a v1 gap).
 - **Ruled out of scope** (per issue #21's resolution): `client.window_title.*`,

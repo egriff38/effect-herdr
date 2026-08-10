@@ -139,10 +139,16 @@ const EntityProto = {
   },
 }
 
-// The kind tag lives on the prototype, not as an own property, so that a
-// spread (`{ ...pane }`) drops it along with the Equal/Hash methods and fails
-// to typecheck — rather than copying the tag alone into a half-entity that
-// satisfies the type but compares by reference.
+// The kind tag lives on the prototype, not as an own property, so a spread
+// (`{ ...pane }`) drops it along with the Equal/Hash methods, rather than
+// copying the tag alone into a half-entity that compares by reference.
+//
+// Note this is a RUNTIME distinction, not a compile-time one: TypeScript still
+// considers `{ ...pane }` assignable to `Pane` (it tracks the symbol-keyed
+// property through the spread even though JS does not copy it), so the spread
+// typechecks and then fails `isPane` at runtime. Combinators that switch on the
+// tag therefore need an explicit fallback rather than relying on exhaustiveness
+// — see `assertEntity` in `operations/entity.ts`.
 const entityProtoFor = <K extends EntityKind>(kind: K) =>
   Object.assign(Object.create(EntityProto), { [EntityTypeId]: kind }) as Entity<K>
 
@@ -160,13 +166,22 @@ export const isEntity = (u: unknown): u is Entity =>
   typeof u === "object" && u !== null && EntityTypeId in u
 
 /**
- * Orders any two identity values of the same kind by id — herdr ids sort
- * lexicographically into a stable, human-meaningful order.
+ * Orders identity values by id, then by kind.
+ *
+ * The kind tiebreak keeps this **coherent with `Equal`/`Hash`**, which both mix
+ * in kind: without it a same-id `Workspace` and `Tab` would order as equal
+ * (`0`) while comparing and hashing as distinct, so a sorted structure and a
+ * `HashSet` would disagree about whether they are the same element. Ids sort
+ * lexicographically, which for herdr's `w1:t1:p1` scheme is also a stable,
+ * human-meaningful order.
  *
  * @category ordering
  * @since 0.1.0
  */
-export const EntityOrder: Order.Order<Entity> = Order.mapInput(Order.String, (entity) => entity.id)
+export const EntityOrder: Order.Order<Entity> = Order.combine(
+  Order.mapInput(Order.String, (entity: Entity) => entity.id),
+  Order.mapInput(Order.String, (entity: Entity) => entity[EntityTypeId]),
+)
 
 /**
  * A pane's stable identity: its own id plus the tab/workspace containing

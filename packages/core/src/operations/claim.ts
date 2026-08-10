@@ -103,6 +103,14 @@ const watchWiring = (entity: Entity): {
       return { subscribeType: "tab.closed", pushEvent: "tab_closed", idField: "tab_id" }
     case "workspace":
       return { subscribeType: "workspace.closed", pushEvent: "workspace_closed", idField: "workspace_id" }
+    default:
+      // Reachable despite the type: a spread drops the prototype-borne tag.
+      // Claiming an untagged value must fail loudly, never silently unwatched.
+      throw new Error(
+        `not a herdr entity: cannot claim ${
+          JSON.stringify(entity)
+        }. A spread such as \`{ ...pane }\` drops the kind tag — pass the original value.`,
+      )
   }
 }
 
@@ -116,6 +124,10 @@ const closeEntity = (
       return closeTab(entity)
     case "workspace":
       return closeWorkspace(entity)
+    default:
+      return Effect.die(
+        new Error(`not a herdr entity: cannot close ${JSON.stringify(entity)}`),
+      )
   }
 }
 
@@ -129,27 +141,35 @@ const claimInScope = (
     const connection = yield* HerdrConnection
     const { idField, pushEvent, subscribeType } = watchWiring(entity)
 
-    const watch = Effect.gen(function*() {
-      const pushes = yield* connection.subscribeEvents([subscribeType])
-      yield* Stream.runForEach(pushes, (push: HerdrEventPush) =>
-        push.event === pushEvent && push.data[idField] === entity.id
-          ? Fiber.interrupt(claimant)
-          : Effect.void)
-    })
-
-    // The watcher is forked into the scope, and its subscription is bound to
-    // that same scope — so closing the scope both interrupts the watcher and
-    // drops the subscription. That is what makes "retain" a pure unwatch.
-    yield* watch.pipe(
+    // Subscribe BEFORE forking. `subscribeEvents` resolves only after herdr
+    // acks the subscription, so awaiting it here means `claim` cannot return
+    // until the watch is genuinely armed. Opening the subscription inside the
+    // forked fiber instead would let `claim` resolve while the dial/ack is
+    // still in flight, and a close landing in that window would be missed.
+    const pushes = yield* connection.subscribeEvents([subscribeType]).pipe(
       Scope.provide(scope),
-      // A watcher that dies cannot observe closure, and a dropped subscription
-      // is not evidence the resource died — so it must not interrupt the
-      // claimant. But it does silently downgrade the claim to unwatched, which
-      // is a real loss of the guarantee the caller asked for: log at WARNING,
-      // not debug. (A debug-level log here is exactly what hid herdr's
-      // `unsupported_event_wait_match` rejection during development.)
+      // A subscription we cannot open means no watch — that is a real loss of
+      // the guarantee the caller asked for, so say so at WARNING rather than
+      // failing the claim (a dropped subscription is not evidence the resource
+      // died, and must never interrupt the claimant). A debug-level log here is
+      // exactly what hid herdr's `unsupported_event_wait_match` rejection
+      // during development.
       Effect.catchCause((cause) =>
-        Effect.logWarning(`claim on ${entity.id} is no longer watched; liveness not enforced`, cause)
+        Effect.as(
+          Effect.logWarning(`claim on ${entity.id} is not watched; liveness not enforced`, cause),
+          Stream.empty,
+        )
+      ),
+    )
+
+    // The consumer is forked into the scope, so closing the scope interrupts it
+    // and drops the subscription — that is what makes "retain" a pure unwatch.
+    yield* Stream.runForEach(pushes, (push: HerdrEventPush) =>
+      push.event === pushEvent && push.data[idField] === entity.id
+        ? Fiber.interrupt(claimant)
+        : Effect.void).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning(`claim on ${entity.id} stopped watching; liveness not enforced`, cause)
       ),
       Effect.forkIn(scope),
     )

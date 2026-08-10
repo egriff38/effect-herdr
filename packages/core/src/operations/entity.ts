@@ -41,7 +41,16 @@ import type { RpcClientError } from "effect/unstable/rpc/RpcClientError"
  */
 export type AnyEntity = Pane | Tab | Workspace
 
-/** Narrows a tagged entity to the per-kind primitive it dispatches to. */
+/**
+ * Narrows a tagged entity to the per-kind primitive it dispatches to.
+ *
+ * The `default` arm is load-bearing, not dead code. TypeScript considers a
+ * spread (`{ ...pane }`) assignable to `Pane` even though the spread drops the
+ * prototype-borne tag at runtime, so a detagged value can reach here with a
+ * statically impossible `undefined` tag. Without the fallback the `switch`
+ * falls through and the combinator returns `undefined` instead of an `Effect`
+ * — a silent no-op at the call site. Failing loudly is the whole point.
+ */
 const dispatch = <A, E, R>(
   entity: AnyEntity,
   handlers: {
@@ -57,6 +66,14 @@ const dispatch = <A, E, R>(
       return handlers.tab(entity)
     case "workspace":
       return handlers.workspace(entity)
+    default:
+      return Effect.die(
+        new Error(
+          `not a herdr entity: expected a value built by makePane/makeTab/makeWorkspace, got ${
+            JSON.stringify(entity)
+          }. A spread such as \`{ ...pane }\` drops the kind tag — pass the original value, or rebuild it with the matching constructor.`,
+        ),
+      )
   }
 }
 
