@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Equal, HashSet, Option, Schema } from "effect"
+import { Effect, Equal, HashSet, Layer, Option, Schema } from "effect"
+import { HerdrConnection } from "../src/HerdrConnection.js"
+import * as HerdrSessionLayer from "../src/HerdrSession.js"
+import { currentPaneById } from "../src/operations/current.js"
 import {
   AgentPromptedResult,
   AgentViewSortWire,
@@ -8,7 +11,7 @@ import {
 } from "../src/protocol/HerdrRpcs.js"
 import { close } from "../src/operations/entity.js"
 import { EntityOrder, makePane, makeTab, makeWorkspace } from "../src/protocol/schemas.js"
-import type { Pane, PaneId, TabId, WorkspaceId } from "../src/protocol/schemas.js"
+import type { Pane, PaneId, PaneSnapshot, TabId, WorkspaceId } from "../src/protocol/schemas.js"
 
 /**
  * Regression tests for defects found in review of the branded-entities branch.
@@ -157,5 +160,47 @@ describe("paneNeighbor absent-key handling", () => {
     // schema-optional, so an absent key decodes to undefined.
     expect(Option.isSome(Option.fromNullOr(undefined))).toBe(true)
     expect(Option.isNone(Option.fromNullishOr(undefined))).toBe(true)
+  })
+})
+
+describe("currentPaneById round-trips", () => {
+  test("decodes pane.current's reply without a second pane.get", async () => {
+    // `pane.current` already carries a full pane record. Re-resolving via
+    // `pane.get` cost an extra call and let the pane change between the two.
+    const calls: Array<string> = []
+    const paneRecord = {
+      pane_id: "w1:t1:p1",
+      tab_id: "w1:t1",
+      workspace_id: "w1",
+      terminal_id: "term-1",
+      focused: true,
+      agent_status: "idle" as const,
+      revision: 3,
+    }
+
+    const layer = Layer.succeed(HerdrConnection, {
+      rpc: {
+        "pane.current": () => {
+          calls.push("pane.current")
+          return Effect.succeed({ type: "pane_current", pane: paneRecord })
+        },
+        "pane.get": () => {
+          calls.push("pane.get")
+          return Effect.succeed({ type: "pane_info", pane: paneRecord })
+        },
+      },
+      subscribeEvents: () => Effect.die("subscribeEvents not stubbed"),
+    } as unknown as typeof HerdrConnection.Service)
+
+    const snapshot = await Effect.runPromise(
+      currentPaneById("w1:t1:p1").pipe(
+        Effect.provide(HerdrSessionLayer.layer),
+        Effect.provide(layer),
+      ) as Effect.Effect<PaneSnapshot>,
+    )
+
+    expect(calls).toEqual(["pane.current"])
+    expect(snapshot.id as string).toBe("w1:t1:p1")
+    expect(snapshot.revision).toBe(3)
   })
 })

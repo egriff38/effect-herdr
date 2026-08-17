@@ -30,8 +30,15 @@ import { isPane, makePane } from "../protocol/schemas.js"
 import type { PaneInfoWire, PaneLayoutSnapshotFullWire, PaneProcessInfoProcessWire } from "../protocol/HerdrRpcs.js"
 import type { RpcClientError } from "effect/unstable/rpc/RpcClientError"
 
-// Decodes herdr's pane wire shape into a `PaneSnapshot`; `capturedAt` is stamped via Effect's Clock, not the wire.
-const decodePaneSnapshot = (wire: PaneInfoWire): Effect.Effect<PaneSnapshot> =>
+/**
+ * Decodes herdr's pane wire shape into a `PaneSnapshot`; `capturedAt` is
+ * stamped via Effect's Clock, not the wire.
+ *
+ * Internal, not re-exported from the package barrel: shared with `current.ts`
+ * so a caller holding a `pane.current` reply can decode it in place instead of
+ * issuing a second round-trip for state it already has.
+ */
+export const decodePaneSnapshot = (wire: PaneInfoWire): Effect.Effect<PaneSnapshot> =>
   Effect.map(DateTime.now, (capturedAt) =>
     makePane({
       id: wire.pane_id as PaneId,

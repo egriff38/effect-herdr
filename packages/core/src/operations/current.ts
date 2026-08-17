@@ -21,7 +21,7 @@ import { HerdrSession } from "../HerdrSession.js"
 import type { HerdrProtocolError } from "../protocol/errors.js"
 import type { PaneSnapshot, TabId, TabSnapshot, WorkspaceId, WorkspaceSnapshot } from "../protocol/schemas.js"
 import { makeTab, makeWorkspace } from "../protocol/schemas.js"
-import { snapshotPane } from "./pane.js"
+import { decodePaneSnapshot, snapshotPane } from "./pane.js"
 
 /**
  * The pane that launched this Effect program, if any. `Option.none()`
@@ -173,5 +173,8 @@ export const currentPaneById = (
   Effect.gen(function*() {
     const session = yield* HerdrSession
     const result = yield* session.rpc["pane.current"]({ caller_pane_id: callerPaneId })
-    return yield* snapshotPane({ id: result.pane.pane_id as PaneSnapshot["id"] })
+    // `pane.current` already returns a full pane record — decode it rather than
+    // re-fetching the same state with a second `pane.get`, which also opens a
+    // window for the pane to change between the two calls.
+    return yield* decodePaneSnapshot(result.pane)
   })
