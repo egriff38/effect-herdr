@@ -5,30 +5,61 @@ its covered surface — they're the next things worth building.
 
 ## 1. Full herdr RPC coverage
 
-herdr's socket protocol has 85 methods (`scripts/herdr-schema.json`, protocol
-v16). This SDK currently wires up 14:
+herdr's socket protocol has 89 methods (`scripts/herdr-schema.json`,
+protocol v17). This SDK now wires up 62:
 
 ```
-ping, workspace.list, workspace.get, tab.get, pane.list, pane.get,
-pane.split, pane.focus, pane.close, pane.send_text, pane.read,
-pane.wait_for_output, session.snapshot, events.subscribe
+ping, workspace.list/get/create/close/rename/focus/move,
+tab.get/create/close/rename/focus/move/list,
+pane.list/get/split/focus/close/send_text/read/wait_for_output/
+  rename/send_keys/move/swap/resize/zoom/focus_direction/neighbor/edges/
+  current/layout/process_info,
+session.snapshot, events.subscribe, events.wait,
+worktree.list/create/open/remove,
+notification.show, integration.install/uninstall,
+agent.list/get/read/explain/rename/focus/start/send_keys/prompt/wait/
+  view.set/view.clear,
+pane.report_agent/report_agent_session/report_metadata/release_agent/
+  clear_agent_authority, workspace.report_metadata
 ```
 
 Everything else is reachable only by dropping to the raw protocol layer
 (`session.rpc["method.name"](...)` once you've hand-added it to `HerdrRpcs`) —
-there's no ergonomic combinator. Notably missing:
+there's no ergonomic combinator. Remaining gaps, per the wayfinder map
+(issue #13 and its children, all resolved/closed):
 
-- **Workspace/tab/pane lifecycle**: `workspace.create/close/focus/rename/move`,
-  `tab.create/close/focus/rename/move/list`, `pane.move/swap/rename/resize/zoom`.
-- **Layout**: `pane.layout`, `layout.apply/export/set_split_ratio`, `pane.edges`,
-  `pane.neighbor`, `pane.focus_direction`.
-- **Agent introspection**: `agent.list/get/read/explain/send/start/rename/focus`,
-  `pane.report_agent/report_agent_session/release_agent/clear_agent_authority`.
-- **Worktrees**: `worktree.create/list/open/remove`.
+- **`pane.send_input`** — the combined text+keys form. Deliberately left
+  unwired per issue #16's resolution: no documented ordering semantics for
+  combined `text`+`keys` in one call, and the existing `runInPane`+`sendKeys`
+  two-round-trip composition already covers the practical cases. Revisit
+  only if a caller needs single-round-trip atomicity — needs live-server
+  verification, not a schema-only decision.
+- **Layout serialization**: `layout.apply/export/set_split_ratio` — whole-tab
+  layout snapshot/replay. Deferred per issue #13's map ("Not yet specified")
+  — no concrete caller yet to pin the shape down. Distinct from the already-
+  wired `pane.layout` (a flat, read-only geometry snapshot, not a portable/
+  replayable description).
+- **`pane.graphics.set/clear/info`** — inline image protocol into a pane.
+  Deferred per issue #21's resolution — plausible case-C fit, but no
+  concrete caller yet to pin down the `placement`/format shape.
+- **`AgentViewFilter`'s filter DSL** (`all`/`any`/`not`/`eq`/`exists`/`in`,
+  used by `agent.view.set`) is wired as an untyped passthrough
+  (`Record<string, unknown>`), not a properly modeled recursive schema. This
+  was originally attributed to the effect version lacking a recursive-schema
+  combinator, which is **wrong** — `Schema.suspend` exists in
+  `4.0.0-beta.74` (`Schema.d.ts:3513`). Modeling the self-referential
+  `all`/`any`/`not` variants is straightforward and simply hasn't been done;
+  the only real question is how faithfully to type the leaf comparisons
+  (`eq`/`exists`/`in`), whose value side is genuinely heterogeneous.
 - **Plugins**: the entire `plugin.*` namespace (out of scope per issue #1's
   "v2 case A" deferral — plugins are a v2 concept, not a v1 gap).
-- **Misc**: `pane.graphics.*`, `client.window_title.*`, `notification.show`,
-  `popup.close`, `server.*`, `integration.*`.
+- **Ruled out of scope** (per issue #21's resolution): `client.window_title.*`,
+  `server.*`, `popup.close` — host-app/terminal-chrome territory, no
+  plausible case-B/C caller.
+- **No snapshot combinators yet** for the newer identity types:
+  `snapshotWorkspace`/`snapshotTab` (flagged in issue #14's resolution) —
+  `createWorkspace`/`createTab`/`createWorktree`/`openWorktree` all return
+  bare identity with nothing to re-fetch fresh state from yet.
 
 Adding a method is mechanical: a wire-schema class in `protocol/HerdrRpcs.ts`
 (reuse an existing result shape where the wire actually reuses one — check
@@ -36,22 +67,28 @@ against `scripts/herdr-schema.json` before assuming a new shape is needed),
 an `Rpc.make(...)` entry, and — if it deserves an ergonomic combinator, not
 just raw-`rpc` access — a function in the matching `operations/*.ts` file.
 
-## 2. PTY input beyond typed text
+## 2. `events.wait` only matches pane agent status
 
-`runInPane` sends printable text via `pane.send_text` — there is no way to
-send arrow keys, `Ctrl-C`, `Tab`-completion, or any other control sequence.
-herdr's wire already has the primitives for this:
+`waitForEvent` wraps `events.wait`, whose schema (`scripts/herdr-schema.json`,
+protocol v17) advertises an `EventMatch` union covering every lifecycle event —
+`workspace_closed`, `tab_closed`, `pane_closed`, `*_renamed`, `*_focused`, and
+so on. **The server does not implement most of them.** Verified against herdr
+0.7.5 (protocol 17): a `workspace_closed` match is rejected outright with
 
-- **`pane.send_keys`** — `{ pane_id, keys: string[] }`, a list of named keys
-  (arrow keys, function keys, modifiers) rather than literal characters.
-- **`pane.send_input`** — `{ pane_id, text?, keys? }`, a combined form.
+```
+HerdrProtocolError { code: "unsupported_event_wait_match",
+  rawMessage: "events.wait currently supports pane agent status matches" }
+```
 
-Neither is wired into `HerdrRpcs` yet. The natural shape once they land:
-something like `sendKeys(pane, ["Up", "Up", "Enter"])`, distinct from
-`runInPane`'s "type this text" semantics — a real design question is whether
-that's a new combinator or a third `runInPane` overload taking a structured
-key-sequence type instead of a string/`Stream<string>`; the latter risks
-overloading one function with too many unrelated shapes.
+So `waitForEvent` is usable today only for pane agent-status matches, despite
+its type admitting far more. The schema is aspirational here, not descriptive.
+
+The workaround, and what `operations/claim.ts` does: subscribe to the push
+stream (`HerdrConnection.subscribeEvents(["workspace.closed"])`) and filter
+client-side. That path *does* deliver every close event, with the resource id
+in the payload. Worth either narrowing `EventMatch` to what the server really
+accepts, or keeping the wide type and documenting the runtime failure on the
+combinator — currently a caller only finds out at runtime.
 
 ## 3. High-fidelity real-time pane content back to the controller
 

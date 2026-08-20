@@ -9,26 +9,48 @@
  * @since 0.1.0
  */
 
-import { DateTime, Duration, Effect, Function, Predicate, Stream } from "effect"
+import { DateTime, Duration, Effect, Function, Option, Stream } from "effect"
 import { HerdrSession } from "../HerdrSession.js"
 import { HerdrProtocolError, WaitError } from "../protocol/errors.js"
-import type { Pane, PaneId, PaneSnapshot, Workspace } from "../protocol/schemas.js"
-import type { PaneInfoWire } from "../protocol/HerdrRpcs.js"
+import type {
+  Pane,
+  PaneEdges,
+  PaneId,
+  PaneLayoutPane,
+  PaneLayoutSnapshot,
+  PaneLayoutSplit,
+  PaneProcessInfo,
+  PaneProcessInfoProcess,
+  PaneSnapshot,
+  TabId,
+  Workspace,
+  WorkspaceId,
+} from "../protocol/schemas.js"
+import { isPane, makePane } from "../protocol/schemas.js"
+import type { PaneInfoWire, PaneLayoutSnapshotFullWire, PaneProcessInfoProcessWire } from "../protocol/HerdrRpcs.js"
 import type { RpcClientError } from "effect/unstable/rpc/RpcClientError"
 
-// Decodes herdr's pane wire shape into a `PaneSnapshot`; `capturedAt` is stamped via Effect's Clock, not the wire.
-const decodePaneSnapshot = (wire: PaneInfoWire): Effect.Effect<PaneSnapshot> =>
-  Effect.map(DateTime.now, (capturedAt) => ({
-    id: wire.pane_id as PaneId,
-    tabId: wire.tab_id as PaneSnapshot["tabId"],
-    workspaceId: wire.workspace_id as PaneSnapshot["workspaceId"],
-    revision: wire.revision,
-    cwd: wire.cwd ?? "",
-    agent: wire.agent ?? undefined,
-    agentStatus: wire.agent_status,
-    focused: wire.focused,
-    capturedAt,
-  }))
+/**
+ * Decodes herdr's pane wire shape into a `PaneSnapshot`; `capturedAt` is
+ * stamped via Effect's Clock, not the wire.
+ *
+ * Internal, not re-exported from the package barrel: shared with `current.ts`
+ * so a caller holding a `pane.current` reply can decode it in place instead of
+ * issuing a second round-trip for state it already has.
+ */
+export const decodePaneSnapshot = (wire: PaneInfoWire): Effect.Effect<PaneSnapshot> =>
+  Effect.map(DateTime.now, (capturedAt) =>
+    makePane({
+      id: wire.pane_id as PaneId,
+      tabId: wire.tab_id as PaneSnapshot["tabId"],
+      workspaceId: wire.workspace_id as PaneSnapshot["workspaceId"],
+      revision: wire.revision,
+      cwd: wire.cwd ?? "",
+      agent: wire.agent ?? undefined,
+      agentStatus: wire.agent_status,
+      focused: wire.focused,
+      capturedAt,
+    }))
 
 /**
  * Lists every pane in `workspace`, as snapshots.
@@ -106,9 +128,6 @@ export interface SplitOptions {
   readonly focus?: boolean
 }
 
-const isPaneArg = (u: unknown): u is Pane =>
-  Predicate.hasProperty(u, "id") && Predicate.hasProperty(u, "tabId") && Predicate.hasProperty(u, "workspaceId")
-
 /**
  * Splits `pane`, creating a new sibling pane. Returns the *new* pane's
  * identity (not a `PaneSnapshot`) — call `snapshotPane` afterwards for its
@@ -140,7 +159,7 @@ export const splitPane: {
     options?: SplitOptions,
   ): (pane: Pane) => Effect.Effect<Pane, HerdrProtocolError | RpcClientError, HerdrSession>
 } = Function.dual(
-  (args) => isPaneArg(args[0]),
+  (args) => isPane(args[0]),
   (pane: Pane, options?: SplitOptions) =>
     Effect.gen(function*() {
       const session = yield* HerdrSession
@@ -149,11 +168,11 @@ export const splitPane: {
         direction: options?.direction ?? "right",
         focus: options?.focus,
       })
-      return {
+      return makePane({
         id: result.pane.pane_id as PaneId,
         tabId: result.pane.tab_id as Pane["tabId"],
         workspaceId: result.pane.workspace_id as Pane["workspaceId"],
-      }
+      })
     }),
 )
 
@@ -246,7 +265,7 @@ export const runInPane: {
     chunks: Stream.Stream<string, E, R>,
   ): (pane: Pane) => Effect.Effect<void, HerdrProtocolError | RpcClientError | E, HerdrSession | R>
 } = Function.dual(
-  (args) => isPaneArg(args[0]),
+  (args) => isPane(args[0]),
   dispatchRunInPane,
 )
 
@@ -311,7 +330,7 @@ export const waitForOutput: {
     options?: WaitOptions,
   ): (pane: Pane) => Stream.Stream<string, HerdrProtocolError | WaitError | RpcClientError, HerdrSession>
 } = Function.dual(
-  (args) => isPaneArg(args[0]),
+  (args) => isPane(args[0]),
   (pane: Pane, match: string, options?: WaitOptions) =>
     Stream.fromEffect(
       Effect.gen(function*() {
@@ -359,4 +378,520 @@ export const closePane = (pane: Pane): Effect.Effect<void, HerdrProtocolError | 
   Effect.gen(function*() {
     const session = yield* HerdrSession
     yield* session.rpc["pane.close"]({ pane_id: pane.id })
+  })
+
+const decodePaneLayoutSnapshot = (wire: PaneLayoutSnapshotFullWire): PaneLayoutSnapshot => ({
+  workspaceId: wire.workspace_id as WorkspaceId,
+  tabId: wire.tab_id as TabId,
+  zoomed: wire.zoomed,
+  area: wire.area,
+  focusedPaneId: wire.focused_pane_id as PaneId,
+  panes: wire.panes.map((p): PaneLayoutPane => ({
+    paneId: p.pane_id as PaneId,
+    focused: p.focused,
+    rect: p.rect,
+  })),
+  splits: wire.splits.map((s): PaneLayoutSplit => ({
+    id: s.id,
+    direction: s.direction,
+    ratio: s.ratio,
+    rect: s.rect,
+  })),
+})
+
+/**
+ * Renames `pane`'s display label. `label: undefined` (or omitted) clears
+ * it — herdr's wire accepts `null` for "no label", which this maps from
+ * `undefined`. Dual-shaped: data-first (`renamePane(pane, label)`) and
+ * data-last (`pane.pipe(renamePane(label))`).
+ *
+ * **Example** (renaming a pane)
+ *
+ * ```ts
+ * import { Effect, Option } from "effect"
+ * import { HerdrSession, currentPane, renamePane } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const pane = yield* currentPane
+ *   if (Option.isNone(pane)) return
+ *   yield* renamePane(pane.value, "scratch")
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category combinators
+ * @since 0.1.0
+ */
+export const renamePane: {
+  (pane: Pane, label?: string): Effect.Effect<void, HerdrProtocolError | RpcClientError, HerdrSession>
+  (label?: string): (pane: Pane) => Effect.Effect<void, HerdrProtocolError | RpcClientError, HerdrSession>
+} = Function.dual(
+  (args) => isPane(args[0]),
+  (pane: Pane, label?: string) =>
+    Effect.gen(function*() {
+      const session = yield* HerdrSession
+      yield* session.rpc["pane.rename"]({ pane_id: pane.id, label })
+    }),
+)
+
+/**
+ * Sends raw named key presses (e.g. `"Up"`, `"Ctrl+c"`, `"Escape"`) to
+ * `pane` — distinct from `runInPane`'s literal-character text input.
+ * `keys` is an open string array; herdr documents ad-hoc key-name
+ * aliasing rather than a fixed enum. Dual-shaped: data-first
+ * (`sendKeys(pane, keys)`) and data-last (`pane.pipe(sendKeys(keys))`).
+ *
+ * **Example** (sending an arrow key then Enter)
+ *
+ * ```ts
+ * import { Effect, Option } from "effect"
+ * import { HerdrSession, currentPane, sendKeys } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const pane = yield* currentPane
+ *   if (Option.isNone(pane)) return
+ *   yield* sendKeys(pane.value, ["Up", "Enter"])
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category combinators
+ * @since 0.1.0
+ */
+export const sendKeys: {
+  (pane: Pane, keys: ReadonlyArray<string>): Effect.Effect<void, HerdrProtocolError | RpcClientError, HerdrSession>
+  (
+    keys: ReadonlyArray<string>,
+  ): (pane: Pane) => Effect.Effect<void, HerdrProtocolError | RpcClientError, HerdrSession>
+} = Function.dual(
+  (args) => isPane(args[0]),
+  (pane: Pane, keys: ReadonlyArray<string>) =>
+    Effect.gen(function*() {
+      const session = yield* HerdrSession
+      yield* session.rpc["pane.send_keys"]({ pane_id: pane.id, keys: keys as Array<string> })
+    }),
+)
+
+/**
+ * Options for `movePane`'s destination — an existing tab's split, a
+ * brand-new tab, or a brand-new workspace. Mirrors the wire's
+ * `PaneMoveDestination` discriminated union exactly.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type PaneMoveDestination =
+  | { readonly type: "tab"; readonly tabId: TabId; readonly split: "right" | "down"; readonly targetPaneId?: PaneId; readonly ratio?: number }
+  | { readonly type: "new_tab"; readonly workspaceId?: WorkspaceId; readonly label?: string }
+  | { readonly type: "new_workspace"; readonly label?: string; readonly tabLabel?: string }
+
+/**
+ * Moves `pane` to `destination` — an existing tab's split, a brand-new
+ * tab, or a brand-new workspace. Returns the moved pane's fresh identity
+ * (its `tabId`/`workspaceId` may have changed); herdr's reply also
+ * carries `changed`/`reason`/layout geometry, discarded here. Dual-shaped:
+ * data-first (`movePane(pane, destination, options?)`) and data-last
+ * (`pane.pipe(movePane(destination, options?))`).
+ *
+ * **Example** (moving a pane into a new tab)
+ *
+ * ```ts
+ * import { Effect, Option } from "effect"
+ * import { HerdrSession, currentPane, movePane } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const pane = yield* currentPane
+ *   if (Option.isNone(pane)) return
+ *   const moved = yield* movePane(pane.value, { type: "new_tab" })
+ *   yield* Effect.log(moved.tabId)
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category combinators
+ * @since 0.1.0
+ */
+export const movePane: {
+  (
+    pane: Pane,
+    destination: PaneMoveDestination,
+    options?: { readonly focus?: boolean },
+  ): Effect.Effect<Pane, HerdrProtocolError | RpcClientError, HerdrSession>
+  (
+    destination: PaneMoveDestination,
+    options?: { readonly focus?: boolean },
+  ): (pane: Pane) => Effect.Effect<Pane, HerdrProtocolError | RpcClientError, HerdrSession>
+} = Function.dual(
+  (args) => isPane(args[0]),
+  (pane: Pane, destination: PaneMoveDestination, options?: { readonly focus?: boolean }) =>
+    Effect.gen(function*() {
+      const session = yield* HerdrSession
+      const wireDestination = destination.type === "tab"
+        ? {
+          type: "tab" as const,
+          tab_id: destination.tabId,
+          split: destination.split,
+          target_pane_id: destination.targetPaneId,
+          ratio: destination.ratio,
+        }
+        : destination.type === "new_tab"
+        ? { type: "new_tab" as const, workspace_id: destination.workspaceId, label: destination.label }
+        : { type: "new_workspace" as const, label: destination.label, tab_label: destination.tabLabel }
+      const result = yield* session.rpc["pane.move"]({
+        pane_id: pane.id,
+        destination: wireDestination,
+        focus: options?.focus,
+      })
+      const moved = result.move_result.pane
+      return makePane({
+        id: moved.pane_id as PaneId,
+        tabId: moved.tab_id as Pane["tabId"],
+        workspaceId: moved.workspace_id as Pane["workspaceId"],
+      })
+    }),
+)
+
+/**
+ * Swaps two panes' positions within a tab's layout. Only the explicit
+ * `source`/`target` pair form is exposed — herdr's wire also accepts a
+ * `pane_id`/`direction` targeting mode (swap with whichever neighbor lies
+ * that way), dropped here as an ambiguous second way to say the same
+ * thing; compose with `paneNeighbor` if direction-based swapping is
+ * needed. Discards the reply. Dual-shaped: data-first
+ * (`swapPane(source, target)`) and data-last
+ * (`source.pipe(swapPane(target))`).
+ *
+ * **Example** (swapping two panes)
+ *
+ * ```ts
+ * import { Effect, Option } from "effect"
+ * import { HerdrSession, currentPane, splitPane, swapPane } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const pane = yield* currentPane
+ *   if (Option.isNone(pane)) return
+ *   const sibling = yield* splitPane(pane.value)
+ *   yield* swapPane(pane.value, sibling)
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category combinators
+ * @since 0.1.0
+ */
+export const swapPane: {
+  (source: Pane, target: Pane): Effect.Effect<void, HerdrProtocolError | RpcClientError, HerdrSession>
+  (target: Pane): (source: Pane) => Effect.Effect<void, HerdrProtocolError | RpcClientError, HerdrSession>
+} = Function.dual(
+  2,
+  (source: Pane, target: Pane) =>
+    Effect.gen(function*() {
+      const session = yield* HerdrSession
+      yield* session.rpc["pane.swap"]({ source_pane_id: source.id, target_pane_id: target.id })
+    }),
+)
+
+/**
+ * Options for `resizePane`. `amount` is the fraction of the split to
+ * shift by; herdr defaults it server-side if omitted.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export interface ResizeOptions {
+  readonly amount?: number
+}
+
+/**
+ * Resizes `pane`'s split in `direction` by `options.amount`. Discards the
+ * reply. Dual-shaped: data-first (`resizePane(pane, direction, options?)`)
+ * and data-last (`pane.pipe(resizePane(direction, options?))`).
+ *
+ * **Example** (widening a pane)
+ *
+ * ```ts
+ * import { Effect, Option } from "effect"
+ * import { HerdrSession, currentPane, resizePane } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const pane = yield* currentPane
+ *   if (Option.isNone(pane)) return
+ *   yield* resizePane(pane.value, "right", { amount: 0.1 })
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category combinators
+ * @since 0.1.0
+ */
+export const resizePane: {
+  (
+    pane: Pane,
+    direction: "left" | "right" | "up" | "down",
+    options?: ResizeOptions,
+  ): Effect.Effect<void, HerdrProtocolError | RpcClientError, HerdrSession>
+  (
+    direction: "left" | "right" | "up" | "down",
+    options?: ResizeOptions,
+  ): (pane: Pane) => Effect.Effect<void, HerdrProtocolError | RpcClientError, HerdrSession>
+} = Function.dual(
+  (args) => isPane(args[0]),
+  (pane: Pane, direction: "left" | "right" | "up" | "down", options?: ResizeOptions) =>
+    Effect.gen(function*() {
+      const session = yield* HerdrSession
+      yield* session.rpc["pane.resize"]({ pane_id: pane.id, direction, amount: options?.amount })
+    }),
+)
+
+/**
+ * Toggles or sets `pane`'s zoom (full-tab) state. `mode` defaults to
+ * `"toggle"` server-side if omitted. Discards the reply. Dual-shaped:
+ * data-first (`zoomPane(pane, mode?)`) and data-last
+ * (`pane.pipe(zoomPane(mode?))`).
+ *
+ * **Example** (zooming a pane)
+ *
+ * ```ts
+ * import { Effect, Option } from "effect"
+ * import { HerdrSession, currentPane, zoomPane } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const pane = yield* currentPane
+ *   if (Option.isNone(pane)) return
+ *   yield* zoomPane(pane.value, "on")
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category combinators
+ * @since 0.1.0
+ */
+export const zoomPane: {
+  (pane: Pane, mode?: "toggle" | "on" | "off"): Effect.Effect<void, HerdrProtocolError | RpcClientError, HerdrSession>
+  (
+    mode?: "toggle" | "on" | "off",
+  ): (pane: Pane) => Effect.Effect<void, HerdrProtocolError | RpcClientError, HerdrSession>
+} = Function.dual(
+  (args) => isPane(args[0]),
+  (pane: Pane, mode?: "toggle" | "on" | "off") =>
+    Effect.gen(function*() {
+      const session = yield* HerdrSession
+      yield* session.rpc["pane.zoom"]({ pane_id: pane.id, mode })
+    }),
+)
+
+/**
+ * Focuses whichever pane lies `direction` of `pane` within its tab.
+ * Discards the reply. Dual-shaped: data-first
+ * (`focusPaneDirection(pane, direction)`) and data-last
+ * (`pane.pipe(focusPaneDirection(direction))`).
+ *
+ * **Example** (focusing the pane above)
+ *
+ * ```ts
+ * import { Effect, Option } from "effect"
+ * import { HerdrSession, currentPane, focusPaneDirection } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const pane = yield* currentPane
+ *   if (Option.isNone(pane)) return
+ *   yield* focusPaneDirection(pane.value, "up")
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category combinators
+ * @since 0.1.0
+ */
+export const focusPaneDirection: {
+  (
+    pane: Pane,
+    direction: "left" | "right" | "up" | "down",
+  ): Effect.Effect<void, HerdrProtocolError | RpcClientError, HerdrSession>
+  (
+    direction: "left" | "right" | "up" | "down",
+  ): (pane: Pane) => Effect.Effect<void, HerdrProtocolError | RpcClientError, HerdrSession>
+} = Function.dual(
+  (args) => isPane(args[0]),
+  (pane: Pane, direction: "left" | "right" | "up" | "down") =>
+    Effect.gen(function*() {
+      const session = yield* HerdrSession
+      yield* session.rpc["pane.focus_direction"]({ pane_id: pane.id, direction })
+    }),
+)
+
+/**
+ * Finds whichever pane lies `direction` of `pane`, without focusing it.
+ * `Option.none()` if there is no neighbor that way. Dual-shaped:
+ * data-first (`paneNeighbor(pane, direction)`) and data-last
+ * (`pane.pipe(paneNeighbor(direction))`).
+ *
+ * **Example** (finding the pane to the right)
+ *
+ * ```ts
+ * import { Effect, Option } from "effect"
+ * import { HerdrSession, currentPane, paneNeighbor } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const pane = yield* currentPane
+ *   if (Option.isNone(pane)) return
+ *   const neighbor = yield* paneNeighbor(pane.value, "right")
+ *   yield* Effect.log(neighbor)
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category combinators
+ * @since 0.1.0
+ */
+export const paneNeighbor: {
+  (
+    pane: Pane,
+    direction: "left" | "right" | "up" | "down",
+  ): Effect.Effect<Option.Option<PaneId>, HerdrProtocolError | RpcClientError, HerdrSession>
+  (
+    direction: "left" | "right" | "up" | "down",
+  ): (pane: Pane) => Effect.Effect<Option.Option<PaneId>, HerdrProtocolError | RpcClientError, HerdrSession>
+} = Function.dual(
+  (args) => isPane(args[0]),
+  (pane: Pane, direction: "left" | "right" | "up" | "down") =>
+    Effect.gen(function*() {
+      const session = yield* HerdrSession
+      const result = yield* session.rpc["pane.neighbor"]({ pane_id: pane.id, direction })
+      // `neighbor_pane_id` is schema-OPTIONAL, so herdr may omit the key
+      // entirely — which decodes to `undefined`, and `Option.fromNullOr` maps
+      // only `null` to `None`, turning "no neighbor" into `Some(undefined)`.
+      // Check both absences explicitly.
+      const neighborId = result.neighbor.neighbor_pane_id
+      return neighborId === null || neighborId === undefined
+        ? Option.none<PaneId>()
+        : Option.some(neighborId as PaneId)
+    }),
+)
+
+/**
+ * Reports which of `pane`'s four sides has a neighboring pane within its
+ * tab. Single-arg read, not dual-shaped — no relation to compose against.
+ *
+ * **Example** (checking edges)
+ *
+ * ```ts
+ * import { Effect, Option } from "effect"
+ * import { HerdrSession, currentPane, paneEdges } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const pane = yield* currentPane
+ *   if (Option.isNone(pane)) return
+ *   const edges = yield* paneEdges(pane.value)
+ *   yield* Effect.log(edges)
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
+export const paneEdges = (
+  pane: Pane,
+): Effect.Effect<PaneEdges, HerdrProtocolError | RpcClientError, HerdrSession> =>
+  Effect.gen(function*() {
+    const session = yield* HerdrSession
+    const result = yield* session.rpc["pane.edges"]({ pane_id: pane.id })
+    return {
+      left: result.edges.left,
+      right: result.edges.right,
+      up: result.edges.up,
+      down: result.edges.down,
+    }
+  })
+
+/**
+ * Reads `pane`'s current tab-wide geometry — every pane's rect, every
+ * split divider, and zoom state. Single-arg read, not dual-shaped.
+ *
+ * **Example** (reading layout)
+ *
+ * ```ts
+ * import { Effect, Option } from "effect"
+ * import { HerdrSession, currentPane, paneLayout } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const pane = yield* currentPane
+ *   if (Option.isNone(pane)) return
+ *   const layout = yield* paneLayout(pane.value)
+ *   yield* Effect.log(layout.panes.length)
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
+export const paneLayout = (
+  pane: Pane,
+): Effect.Effect<PaneLayoutSnapshot, HerdrProtocolError | RpcClientError, HerdrSession> =>
+  Effect.gen(function*() {
+    const session = yield* HerdrSession
+    const result = yield* session.rpc["pane.layout"]({ pane_id: pane.id })
+    return decodePaneLayoutSnapshot(result.layout)
+  })
+
+const decodePaneProcessInfoProcess = (wire: PaneProcessInfoProcessWire): PaneProcessInfoProcess => ({
+  pid: wire.pid,
+  name: wire.name,
+  argv: wire.argv ?? undefined,
+  argv0: wire.argv0 ?? undefined,
+  cmdline: wire.cmdline ?? undefined,
+  cwd: wire.cwd ?? undefined,
+})
+
+/**
+ * Reads `pane`'s shell/process state — shell PID, tty path, and the
+ * foreground process group herdr found in the pty. Single-arg read, not
+ * dual-shaped. A heavier, opt-in read compared to `snapshotPane` — not
+ * folded into `PaneSnapshot`.
+ *
+ * **Example** (reading process info)
+ *
+ * ```ts
+ * import { Effect, Option } from "effect"
+ * import { HerdrSession, currentPane, paneProcessInfo } from "effect-herdr"
+ *
+ * const program = Effect.gen(function*() {
+ *   const pane = yield* currentPane
+ *   if (Option.isNone(pane)) return
+ *   const info = yield* paneProcessInfo(pane.value)
+ *   yield* Effect.log(info.shellPid)
+ * })
+ *
+ * program.pipe(Effect.provide(HerdrSession.Live), Effect.runPromise)
+ * ```
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
+export const paneProcessInfo = (
+  pane: Pane,
+): Effect.Effect<PaneProcessInfo, HerdrProtocolError | RpcClientError, HerdrSession> =>
+  Effect.gen(function*() {
+    const session = yield* HerdrSession
+    const result = yield* session.rpc["pane.process_info"]({ pane_id: pane.id })
+    const info = result.process_info
+    return {
+      paneId: info.pane_id as PaneId,
+      shellPid: info.shell_pid ?? undefined,
+      tty: info.tty ?? undefined,
+      foregroundProcessGroupId: info.foreground_process_group_id ?? undefined,
+      foregroundProcesses: info.foreground_processes.map(decodePaneProcessInfoProcess),
+    }
   })

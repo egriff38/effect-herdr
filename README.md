@@ -68,8 +68,17 @@ bun run examples/parrot.ts   # run from inside a herdr pane
   `Option`-wrapped), `focusedPaneRef` (a live `SubscriptionRef` that updates
   as focus changes anywhere in herdr).
 - **Identity vs. state** — `Pane`/`Tab`/`Workspace` are stable references you
-  can hold onto; `PaneSnapshot`/`TabSnapshot`/`WorkspaceSnapshot` are
-  point-in-time reads with their own `capturedAt`.
+  can hold onto, built with `makePane`/`makeTab`/`makeWorkspace` (they carry a
+  kind tag, so a `Pane` can never be mistaken for the `Tab` it structurally
+  contains, plus `Equal`/`Hash` so they work as `HashMap` keys);
+  `PaneSnapshot`/`TabSnapshot`/`WorkspaceSnapshot` are point-in-time reads
+  with their own `capturedAt`.
+- **Resource liveness** — `claim`/`withClaim` tie a resource to a `Scope`: if
+  herdr closes it out from under you, the claiming fiber is interrupted
+  instead of failing on some later RPC. `disconnectPolicy: "destroy"` also
+  closes the resource when the scope ends.
+- **Kind-polymorphic ops** — `close`/`focus`/`rename` accept a pane, tab, or
+  workspace and dispatch on its kind, alongside the per-kind primitives.
 - **Raw protocol escape hatch** — every ergonomic combinator is built on
   `HerdrConnection`'s typed `rpc` client. Drop to
   `session.rpc["workspace.list"]()` whenever the service layer doesn't cover
@@ -77,7 +86,7 @@ bun run examples/parrot.ts   # run from inside a herdr pane
 
 Not every herdr RPC method has an ergonomic wrapper yet — see
 [`TODO.md`](./TODO.md) for the coverage gap and other known limitations
-(PTY control-key input, real-time pane-output tailing).
+(real-time pane-output tailing, `pane.send_input`'s combined text+keys form).
 
 ## Platform runtime
 

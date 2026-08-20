@@ -4,6 +4,7 @@ import { Effect, Exit, Fiber, Option, Scope, Stream } from "effect"
 import { ChildProcess } from "effect/unstable/process"
 import { HerdrConnection, HerdrSession } from "effect-herdr"
 import { focusedPaneRef, focusPane, splitPane } from "effect-herdr"
+import { makePane } from "effect-herdr"
 import type { Pane, PaneId, TabId, WorkspaceId } from "effect-herdr"
 import { acquire, createWorkspaceFixture } from "../src/HerdrTestServer.js"
 
@@ -59,11 +60,11 @@ describe("Slice 9 E2E — focusedPaneRef", () => {
         const withConnection = Effect.provideService(HerdrConnection.HerdrConnection, connection)
         const withSession = Effect.provide(HerdrSession.layer)
 
-        const paneA: Pane = {
+        const paneA: Pane = makePane({
           id: fixture.paneId as PaneId,
           tabId: fixture.tabId as TabId,
           workspaceId: fixture.workspaceId as WorkspaceId,
-        }
+        })
         const paneB = yield* splitPane(paneA, { direction: "right" }).pipe(withSession, withConnection)
 
         const ref = yield* focusedPaneRef.pipe(withSession, withConnection)

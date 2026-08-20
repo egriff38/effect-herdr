@@ -4,6 +4,7 @@ import { Effect, Stream } from "effect"
 import { HerdrConnection, HerdrSession } from "effect-herdr"
 import { WaitError, waitForOutput } from "effect-herdr"
 import { runInPane } from "effect-herdr"
+import { makePane } from "effect-herdr"
 import type { PaneId, TabId, WorkspaceId } from "effect-herdr"
 import { acquire, createWorkspaceFixture } from "../src/HerdrTestServer.js"
 
@@ -30,11 +31,11 @@ describe("Slice 6 E2E — waitForOutput", () => {
           const withConnection = Effect.provideService(HerdrConnection.HerdrConnection, connection)
           const withSession = Effect.provide(HerdrSession.layer)
 
-          const pane = {
+          const pane = makePane({
             id: fixture.paneId as PaneId,
             tabId: fixture.tabId as TabId,
             workspaceId: fixture.workspaceId as WorkspaceId,
-          }
+          })
 
           yield* runInPane(pane, "echo ready").pipe(withSession, withConnection)
 
@@ -61,11 +62,11 @@ describe("Slice 6 E2E — waitForOutput", () => {
           const withConnection = Effect.provideService(HerdrConnection.HerdrConnection, connection)
           const withSession = Effect.provide(HerdrSession.layer)
 
-          const pane = {
+          const pane = makePane({
             id: fixture.paneId as PaneId,
             tabId: fixture.tabId as TabId,
             workspaceId: fixture.workspaceId as WorkspaceId,
-          }
+          })
 
           yield* runInPane(pane, "echo READY-42").pipe(withSession, withConnection)
 
@@ -93,11 +94,11 @@ describe("Slice 6 E2E — waitForOutput", () => {
           const withConnection = Effect.provideService(HerdrConnection.HerdrConnection, connection)
           const withSession = Effect.provide(HerdrSession.layer)
 
-          const pane = {
+          const pane = makePane({
             id: fixture.paneId as PaneId,
             tabId: fixture.tabId as TabId,
             workspaceId: fixture.workspaceId as WorkspaceId,
-          }
+          })
 
           yield* waitForOutput(pane, "will-never-appear", { timeout: "500 millis" }).pipe(
             Stream.runCollect,
